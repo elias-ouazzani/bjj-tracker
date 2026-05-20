@@ -13,6 +13,7 @@ from functools import lru_cache
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from models import Session
 
@@ -56,8 +57,8 @@ def list_sessions(start: date, end: date) -> list[Session]:
     query = (
         _client()
         .collection(SESSIONS_COLLECTION)
-        .where("date", ">=", start.isoformat())
-        .where("date", "<=", end.isoformat())
+        .where(filter=FieldFilter("date", ">=", start.isoformat()))
+        .where(filter=FieldFilter("date", "<=", end.isoformat()))
         .order_by("date")
     )
     return [Session(**doc.to_dict()) for doc in query.stream()]
