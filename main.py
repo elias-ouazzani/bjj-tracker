@@ -9,6 +9,7 @@ Cloud Run reads PORT from env; default 8080 locally.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import date, timedelta
 
@@ -99,7 +100,7 @@ def index() -> None:
                         notes = (e["notes"] or "").strip()
                         if not notes:
                             continue
-                        tags = extract_tags(notes)
+                        tags = await asyncio.to_thread(extract_tags, notes)
                         log_entries.append(
                             LogEntry(notes_raw=notes, category=e["category"], tags=tags)
                         )
