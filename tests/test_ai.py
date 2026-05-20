@@ -28,6 +28,14 @@ def test_extract_tags_calls_agent(monkeypatch):
     fake_agent.run_sync.assert_called_once_with("rubber guard from bottom")
 
 
+def test_get_agent_lazy_construction_and_cache(monkeypatch):
+    """_get_agent constructs the Agent on first call, caches on subsequent calls."""
+    monkeypatch.setattr(ai, "_agent", None)
+    first = ai._get_agent()
+    second = ai._get_agent()
+    assert first is second  # cached
+
+
 def test_extract_tags_multiple_tags(monkeypatch):
     expected = [
         Tag(technique="Triangle Choke", position="Bottom Guard"),

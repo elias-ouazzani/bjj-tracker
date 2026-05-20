@@ -31,11 +31,23 @@ Rules:
 - Return an empty list if no clear technique is mentioned
 """
 
-_agent = Agent(
-    "anthropic:claude-haiku-4-5",
-    output_type=list[Tag],
-    system_prompt=_SYSTEM_PROMPT,
-)
+_agent: Agent | None = None
+
+
+def _get_agent() -> Agent:
+    """Lazily construct the Agent. Defers ANTHROPIC_API_KEY validation
+    until first call, so module import works in environments where the
+    key is set after import (e.g. via dotenv) or never set (e.g. unit
+    tests that mock _agent directly).
+    """
+    global _agent
+    if _agent is None:
+        _agent = Agent(
+            "anthropic:claude-haiku-4-5",
+            output_type=list[Tag],
+            system_prompt=_SYSTEM_PROMPT,
+        )
+    return _agent
 
 
 def extract_tags(notes_raw: str) -> list[Tag]:
@@ -45,4 +57,4 @@ def extract_tags(notes_raw: str) -> list[Tag]:
     """
     if not notes_raw.strip():
         return []
-    return _agent.run_sync(notes_raw).output
+    return _get_agent().run_sync(notes_raw).output
