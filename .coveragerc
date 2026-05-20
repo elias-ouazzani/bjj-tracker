@@ -1,0 +1,11 @@
+[run]
+omit =
+    main.py
+    tests/*
+    .venv/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__
+    if __name__ in
