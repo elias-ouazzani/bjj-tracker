@@ -49,6 +49,14 @@ def _new_entry_row(container: ui.column, entries: list[dict]) -> None:
 def index() -> None:
     ui.colors(primary=ACCENT)
     ui.query("body").style(f"background-color: {BG}; color: {TEXT}; font-family: 'JetBrains Mono', monospace;")
+    ui.add_css("""
+        @keyframes scoreflash {
+            0%   { transform: scale(1); }
+            30%  { transform: scale(1.18); filter: brightness(1.4); }
+            100% { transform: scale(1); }
+        }
+        .score-pulse { animation: scoreflash 0.7s ease-out; transform-origin: center; }
+    """)
 
     with ui.column().classes("w-full max-w-3xl mx-auto p-6 gap-6"):
         ui.label("Session Tracker — Grappling").classes("text-3xl font-bold").style(f"color: {ACCENT}")
@@ -118,10 +126,65 @@ def index() -> None:
                     )
                     save_session(session)
                     ui.notify(f"Saved {session.id}", color="positive")
+
+                    # Reset form to defaults
+                    session_state["date"] = date.today().isoformat()
+                    session_state["slot"] = "AM"
+                    session_state["drilling_minutes"] = 0
+                    session_state["sparring_rounds"] = 0
+                    session_state["round_length_minutes"] = 6
+                    entries.clear()
+                    entries_col.clear()
+                    _new_entry_row(entries_col, entries)
+
+                    # Refresh data displays (score animates from the CSS class)
+                    stats_panel.refresh()
                     history_container.refresh()
 
                 ui.button("Save session", on_click=on_save) \
                     .style(f"background-color: {ACCENT}; color: {BG}")
+
+        # ---- Stats panel ----
+        @ui.refreshable
+        def stats_panel() -> None:
+            end = date.today()
+            week_start = end - timedelta(days=end.weekday())  # Monday of this week
+            month_start = end - timedelta(days=30)
+            try:
+                month_sessions = list_sessions(month_start, end)
+            except Exception:
+                return
+            week_sessions = [s for s in month_sessions if s.date >= week_start]
+            week_mat_min = sum(
+                s.drilling_minutes + s.sparring_rounds * s.round_length_minutes
+                for s in week_sessions
+            )
+            month_session_count = len(month_sessions)
+            month_rounds = sum(s.sparring_rounds for s in month_sessions)
+            month_drill_hours = sum(s.drilling_minutes for s in month_sessions) / 60
+
+            with ui.card().classes("w-full").style(f"background-color: {SURFACE}"):
+                with ui.row().classes("w-full gap-4 justify-around items-center"):
+                    with ui.column().classes("items-center gap-0"):
+                        ui.label("THIS WEEK").style(f"color: {MUTED}").classes("text-xs tracking-widest")
+                        ui.label(str(week_mat_min)) \
+                            .classes("text-5xl font-bold score-pulse") \
+                            .style(f"color: {ACCENT}")
+                        ui.label("mat minutes").style(f"color: {MUTED}").classes("text-xs")
+                    with ui.column().classes("items-center gap-0"):
+                        ui.label("SESSIONS").style(f"color: {MUTED}").classes("text-xs tracking-widest")
+                        ui.label(str(month_session_count)).classes("text-3xl font-bold")
+                        ui.label("last 30 days").style(f"color: {MUTED}").classes("text-xs")
+                    with ui.column().classes("items-center gap-0"):
+                        ui.label("ROUNDS").style(f"color: {MUTED}").classes("text-xs tracking-widest")
+                        ui.label(str(month_rounds)).classes("text-3xl font-bold")
+                        ui.label("last 30 days").style(f"color: {MUTED}").classes("text-xs")
+                    with ui.column().classes("items-center gap-0"):
+                        ui.label("DRILLING").style(f"color: {MUTED}").classes("text-xs tracking-widest")
+                        ui.label(f"{month_drill_hours:.1f}h").classes("text-3xl font-bold")
+                        ui.label("last 30 days").style(f"color: {MUTED}").classes("text-xs")
+
+        stats_panel()
 
         # ---- History section ----
         with ui.card().classes("w-full").style(f"background-color: {SURFACE}"):
@@ -142,16 +205,21 @@ def index() -> None:
                     return
 
                 for s in sessions:
-                    with ui.column().classes("w-full p-2 border-l-2").style(f"border-color: {ACCENT}"):
+                    with ui.column().classes("w-full p-2 border-l-2 gap-1").style(f"border-color: {ACCENT}"):
                         ui.label(f"{s.date.isoformat()}  {s.slot}").classes("font-bold")
                         ui.label(
                             f"drill {s.drilling_minutes}min · "
                             f"{s.sparring_rounds}×{s.round_length_minutes}min rolls"
                         ).style(f"color: {MUTED}")
                         for e in s.log_entries:
-                            tag_str = ", ".join(f"{t.technique} ({t.position})" for t in e.tags) or "—"
-                            ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm")
-                            ui.label(f"  tags: {tag_str}").classes("text-xs").style(f"color: {MUTED}")
+                            ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm mt-2")
+                            with ui.row().classes("gap-1 ml-4 flex-wrap"):
+                                if not e.tags:
+                                    ui.label("—").classes("text-xs").style(f"color: {MUTED}")
+                                for t in e.tags:
+                                    ui.label(f"{t.technique} · {t.position}") \
+                                        .classes("text-xs font-semibold px-2 py-0.5 rounded-full") \
+                                        .style(f"background-color: {ACCENT}; color: {BG};")
 
             history_container()
 
