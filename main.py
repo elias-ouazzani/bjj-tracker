@@ -50,7 +50,7 @@ def index() -> None:
     ui.query("body").style(f"background-color: {BG}; color: {TEXT}; font-family: 'JetBrains Mono', monospace;")
 
     with ui.column().classes("w-full max-w-3xl mx-auto p-6 gap-6"):
-        ui.label("bjj-tracker").classes("text-3xl font-bold").style(f"color: {ACCENT}")
+        ui.label("Session Tracker — Grappling").classes("text-3xl font-bold").style(f"color: {ACCENT}")
 
         # ---- Log section ----
         with ui.card().classes("w-full").style(f"background-color: {SURFACE}"):
@@ -157,4 +157,4 @@ def index() -> None:
 
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("PORT", 8080))
-    ui.run(host="0.0.0.0", port=port, title="bjj-tracker", dark=True, reload=False)
+    ui.run(host="0.0.0.0", port=port, title="Session Tracker — Grappling", dark=True, reload=False)
