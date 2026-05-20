@@ -1,8 +1,9 @@
 """NiceGUI app for bjj-tracker.
 
-Single page with two sections:
+Single page with three sections:
 1. Log a new session (date + slot + drilling/sparring totals + N log entries)
-2. History (recent sessions with their tags)
+2. Stats panel (weekly score + 30-day rollups)
+3. History (recent sessions; each has edit/delete actions)
 
 Cloud Run reads PORT from env; default 8080 locally.
 """
@@ -17,7 +18,7 @@ from dotenv import load_dotenv
 from nicegui import ui
 
 from ai import extract_tags
-from db import list_sessions, save_session
+from db import delete_session, list_sessions, save_session
 from models import LogEntry, Session
 
 load_dotenv()
@@ -30,17 +31,26 @@ TEXT = "#FFFFFF"
 MUTED = "#888880"
 
 
-def _new_entry_row(container: ui.column, entries: list[dict]) -> None:
-    """Append one log-entry input row. Tracked in `entries` for read-on-save."""
-    entry_state: dict = {"notes": "", "category": "drill"}
+def _new_entry_row(
+    container: ui.column,
+    entries: list[dict],
+    notes: str = "",
+    category: str = "drill",
+) -> None:
+    """Append one log-entry input row. Tracked in `entries` for read-on-save.
+
+    Accepts initial values so the row can be pre-filled when editing an
+    existing session.
+    """
+    entry_state: dict = {"notes": notes, "category": category}
     entries.append(entry_state)
 
     with container:
         with ui.row().classes("w-full items-center gap-2"):
-            ui.input(placeholder="What did you work on? (1-2 sentences)") \
+            ui.input(placeholder="What did you work on? (1-2 sentences)", value=notes) \
                 .props("dark outlined dense").classes("flex-grow") \
                 .bind_value(entry_state, "notes")
-            ui.select(["drill", "spar"], value="drill") \
+            ui.select(["drill", "spar"], value=category) \
                 .props("dark outlined dense").classes("w-32") \
                 .bind_value(entry_state, "category")
 
@@ -73,6 +83,7 @@ def index() -> None:
                 "round_length_minutes": 6,
             }
             entries: list[dict] = []
+            editing_id: dict = {"value": None}  # holds original ID while editing
 
             with ui.row().classes("w-full gap-4"):
                 ui.input("Date", value=session_state["date"]) \
@@ -96,6 +107,69 @@ def index() -> None:
             ui.label("Log entries").classes("text-md mt-4").style(f"color: {MUTED}")
             entries_col = ui.column().classes("w-full gap-2")
             _new_entry_row(entries_col, entries)
+
+            def reset_form() -> None:
+                """Reset form to defaults and exit edit-mode."""
+                session_state["date"] = date.today().isoformat()
+                session_state["slot"] = "AM"
+                session_state["drilling_minutes"] = 0
+                session_state["sparring_rounds"] = 0
+                session_state["round_length_minutes"] = 6
+                entries.clear()
+                entries_col.clear()
+                _new_entry_row(entries_col, entries)
+                editing_id["value"] = None
+                edit_banner.refresh()
+
+            def start_edit(session: Session) -> None:
+                """Load a session's values into the form for editing."""
+                editing_id["value"] = session.id
+                session_state["date"] = session.date.isoformat()
+                session_state["slot"] = session.slot
+                session_state["drilling_minutes"] = session.drilling_minutes
+                session_state["sparring_rounds"] = session.sparring_rounds
+                session_state["round_length_minutes"] = session.round_length_minutes
+                entries.clear()
+                entries_col.clear()
+                if session.log_entries:
+                    for log in session.log_entries:
+                        _new_entry_row(entries_col, entries, notes=log.notes_raw, category=log.category)
+                else:
+                    _new_entry_row(entries_col, entries)
+                edit_banner.refresh()
+                ui.run_javascript("window.scrollTo({top: 0, behavior: 'smooth'})")
+
+            def on_delete(session_id: str) -> None:
+                """Show a confirm dialog, delete on confirm, refresh data."""
+                with ui.dialog() as dialog, ui.card().style(f"background-color: {SURFACE}; color: {TEXT}"):
+                    ui.label(f"Delete session {session_id}?").classes("text-lg")
+                    ui.label("This cannot be undone.").style(f"color: {MUTED}").classes("text-sm")
+
+                    def confirm() -> None:
+                        delete_session(session_id)
+                        dialog.close()
+                        ui.notify(f"Deleted {session_id}", color="warning")
+                        # If we were editing the deleted session, drop edit state
+                        if editing_id["value"] == session_id:
+                            reset_form()
+                        stats_panel.refresh()
+                        history_container.refresh()
+
+                    with ui.row().classes("justify-end gap-2 w-full"):
+                        ui.button("Cancel", on_click=dialog.close).props("flat")
+                        ui.button("Delete", on_click=confirm).props("color=negative")
+                dialog.open()
+
+            @ui.refreshable
+            def edit_banner() -> None:
+                if editing_id["value"]:
+                    with ui.row().classes("items-center gap-2 mt-2"):
+                        ui.icon("edit").style(f"color: {ACCENT}")
+                        ui.label(f"Editing {editing_id['value']} — Save to update, Cancel to discard") \
+                            .style(f"color: {ACCENT}").classes("text-sm")
+                        ui.button("Cancel", on_click=reset_form).props("flat dense").style(f"color: {MUTED}")
+
+            edit_banner()
 
             with ui.row().classes("gap-2 mt-2"):
                 ui.button("+ Add entry", on_click=lambda: _new_entry_row(entries_col, entries)) \
@@ -125,19 +199,12 @@ def index() -> None:
                         log_entries=log_entries,
                     )
                     save_session(session)
+                    # If editing and the new ID differs (date/slot changed), drop the old doc
+                    if editing_id["value"] and editing_id["value"] != session.id:
+                        delete_session(editing_id["value"])
                     ui.notify(f"Saved {session.id}", color="positive")
 
-                    # Reset form to defaults
-                    session_state["date"] = date.today().isoformat()
-                    session_state["slot"] = "AM"
-                    session_state["drilling_minutes"] = 0
-                    session_state["sparring_rounds"] = 0
-                    session_state["round_length_minutes"] = 6
-                    entries.clear()
-                    entries_col.clear()
-                    _new_entry_row(entries_col, entries)
-
-                    # Refresh data displays (score animates from the CSS class)
+                    reset_form()
                     stats_panel.refresh()
                     history_container.refresh()
 
@@ -206,7 +273,12 @@ def index() -> None:
 
                 for s in sessions:
                     with ui.column().classes("w-full p-2 border-l-2 gap-1").style(f"border-color: {ACCENT}"):
-                        ui.label(f"{s.date.isoformat()}  {s.slot}").classes("font-bold")
+                        with ui.row().classes("w-full items-center"):
+                            ui.label(f"{s.date.isoformat()}  {s.slot}").classes("font-bold flex-grow")
+                            ui.button(icon="edit", on_click=lambda s=s: start_edit(s)) \
+                                .props("flat dense round size=sm").style(f"color: {ACCENT}")
+                            ui.button(icon="delete", on_click=lambda sid=s.id: on_delete(sid)) \
+                                .props("flat dense round size=sm").style(f"color: {MUTED}")
                         ui.label(
                             f"drill {s.drilling_minutes}min · "
                             f"{s.sparring_rounds}×{s.round_length_minutes}min rolls"
