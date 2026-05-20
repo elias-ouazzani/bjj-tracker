@@ -52,6 +52,11 @@ def get_session(session_id: str) -> Session | None:
     return Session(**snap.to_dict())
 
 
+def delete_session(session_id: str) -> None:
+    """Delete a session by ID. Idempotent — no-op if the doc doesn't exist."""
+    _client().collection(SESSIONS_COLLECTION).document(session_id).delete()
+
+
 def list_sessions(start: date, end: date) -> list[Session]:
     """All sessions with `start <= date <= end`, oldest first."""
     query = (

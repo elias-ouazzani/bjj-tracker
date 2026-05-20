@@ -53,6 +53,13 @@ def test_get_session_returns_session_when_exists(fake_client):
     assert result.id == "2026-05-20_AM"
 
 
+def test_delete_session_targets_correct_doc(fake_client):
+    db.delete_session("2026-05-20_AM")
+    fake_client.collection.assert_called_once_with("sessions")
+    fake_client.collection.return_value.document.assert_called_once_with("2026-05-20_AM")
+    fake_client.collection.return_value.document.return_value.delete.assert_called_once()
+
+
 def test_get_session_returns_none_when_missing(fake_client):
     snap = MagicMock()
     snap.exists = False
