@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  GCP_REGION: us-central1
+  GCP_REGION: europe-west1
   SERVICE_NAME: bjj-tracker
   IMAGE_REPO: bjj-tracker
 
