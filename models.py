@@ -102,10 +102,27 @@ class WeightsData(BaseModel):
     duration_minutes: int = 0
 
 
+class MmaData(BaseModel):
+    """MMA session — blends grappling + striking with cage-specific work.
+
+    Tracks both pure-grappling/pure-striking minutes AND MMA-specific
+    drills like wall wrestling and strike-to-takedown chains. Sparring
+    here means MMA sparring (strikes + clinch + takedowns + ground).
+    """
+
+    discipline: Literal["mma"]
+    drilling_minutes: int = 0
+    sparring_rounds: int = 0
+    round_length_minutes: int = 5  # MMA convention is 5-min rounds
+    wall_wrestling_minutes: int = 0       # cage-specific clinch/takedown work
+    strikes_to_takedown_minutes: int = 0  # combo drills (strike entries → TD)
+    log_entries: list[LogEntry] = []
+
+
 # The discriminated union: Pydantic picks the right class from
 # the `discipline` field's value.
 SessionData = Annotated[
-    GrapplingData | StrikingData | CardioData | WeightsData,
+    GrapplingData | StrikingData | CardioData | WeightsData | MmaData,
     Field(discriminator="discipline"),
 ]
 

@@ -21,6 +21,7 @@ from models import (
     Exercise,
     GrapplingData,
     LogEntry,
+    MmaData,
     Session,
     StrikingData,
     WeightsData,
@@ -38,7 +39,7 @@ MUTED = "#888880"
 # Stub until Firebase Auth lands in Phase C
 STUB_USER_ID = "stub-user-1"
 
-DISCIPLINES = ["bjj", "wrestling", "boxing", "kickboxing", "cardio", "weights"]
+DISCIPLINES = ["bjj", "wrestling", "mma", "boxing", "kickboxing", "cardio", "weights"]
 INTENSITIES = ["low", "moderate", "high"]
 
 
@@ -48,6 +49,13 @@ def _total_minutes(data) -> int:
         return data.drilling_minutes + data.sparring_rounds * data.round_length_minutes
     if isinstance(data, StrikingData):
         return data.bag_minutes + data.pad_minutes + data.sparring_rounds * data.round_length_minutes
+    if isinstance(data, MmaData):
+        return (
+            data.drilling_minutes
+            + data.wall_wrestling_minutes
+            + data.strikes_to_takedown_minutes
+            + data.sparring_rounds * data.round_length_minutes
+        )
     if isinstance(data, (CardioData, WeightsData)):
         return data.duration_minutes
     return 0
@@ -120,6 +128,9 @@ def index() -> None:
                 # striking
                 "bag_minutes": 0,
                 "pad_minutes": 0,
+                # mma-specific
+                "wall_wrestling_minutes": 0,
+                "strikes_to_takedown_minutes": 0,
                 # cardio
                 "activity_type": "run",
                 "duration_minutes": 0,
@@ -161,6 +172,25 @@ def index() -> None:
                         ui.number("Sparring rounds", value=session_state["sparring_rounds"], min=0) \
                             .props("dark outlined dense").bind_value(session_state, "sparring_rounds")
                         ui.number("Round length (min)", value=session_state["round_length_minutes"], min=1) \
+                            .props("dark outlined dense").bind_value(session_state, "round_length_minutes")
+                    ui.label("Log entries").classes("text-md mt-2").style(f"color: {MUTED}")
+                    nonlocal_entries_col = ui.column().classes("w-full gap-2")
+                    entries.clear()
+                    _new_entry_row(nonlocal_entries_col, entries)
+                    discipline_form._entries_col = nonlocal_entries_col
+
+                elif d == "mma":
+                    with ui.row().classes("w-full gap-4"):
+                        ui.number("Drilling (min)", value=session_state["drilling_minutes"], min=0) \
+                            .props("dark outlined dense").bind_value(session_state, "drilling_minutes")
+                        ui.number("Wall wrestling (min)", value=session_state["wall_wrestling_minutes"], min=0) \
+                            .props("dark outlined dense").bind_value(session_state, "wall_wrestling_minutes")
+                        ui.number("Strike→TD (min)", value=session_state["strikes_to_takedown_minutes"], min=0) \
+                            .props("dark outlined dense").bind_value(session_state, "strikes_to_takedown_minutes")
+                    with ui.row().classes("w-full gap-4"):
+                        ui.number("Sparring rounds", value=session_state["sparring_rounds"], min=0) \
+                            .props("dark outlined dense").bind_value(session_state, "sparring_rounds")
+                        ui.number("Round length (min)", value=session_state.get("round_length_minutes", 5), min=1) \
                             .props("dark outlined dense").bind_value(session_state, "round_length_minutes")
                     ui.label("Log entries").classes("text-md mt-2").style(f"color: {MUTED}")
                     nonlocal_entries_col = ui.column().classes("w-full gap-2")
@@ -216,7 +246,7 @@ def index() -> None:
             with ui.row().classes("gap-2 mt-2"):
                 def add_row():
                     d = session_state["discipline"]
-                    if d in ("bjj", "wrestling", "boxing", "kickboxing") and hasattr(discipline_form, "_entries_col"):
+                    if d in ("bjj", "wrestling", "mma", "boxing", "kickboxing") and hasattr(discipline_form, "_entries_col"):
                         _new_entry_row(discipline_form._entries_col, entries)
                     elif d == "weights" and hasattr(discipline_form, "_ex_col"):
                         _new_exercise_row(discipline_form._ex_col, exercises)
@@ -254,6 +284,23 @@ def index() -> None:
                         drilling_minutes=int(session_state["drilling_minutes"]),
                         sparring_rounds=int(session_state["sparring_rounds"]),
                         round_length_minutes=int(session_state["round_length_minutes"]),
+                        log_entries=log_entries,
+                    )
+                elif d == "mma":
+                    log_entries = []
+                    for e in entries:
+                        notes = (e["notes"] or "").strip()
+                        if not notes:
+                            continue
+                        tags = await asyncio.to_thread(extract_tags, notes)
+                        log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
+                    data = MmaData(
+                        discipline="mma",
+                        drilling_minutes=int(session_state["drilling_minutes"]),
+                        sparring_rounds=int(session_state["sparring_rounds"]),
+                        round_length_minutes=int(session_state["round_length_minutes"]),
+                        wall_wrestling_minutes=int(session_state["wall_wrestling_minutes"]),
+                        strikes_to_takedown_minutes=int(session_state["strikes_to_takedown_minutes"]),
                         log_entries=log_entries,
                     )
                 elif d in ("boxing", "kickboxing"):
@@ -324,6 +371,8 @@ def index() -> None:
                 session_state["round_length_minutes"] = 6
                 session_state["bag_minutes"] = 0
                 session_state["pad_minutes"] = 0
+                session_state["wall_wrestling_minutes"] = 0
+                session_state["strikes_to_takedown_minutes"] = 0
                 session_state["duration_minutes"] = 0
                 session_state["distance_km"] = None
                 session_state["intensity"] = "moderate"
@@ -416,6 +465,25 @@ def index() -> None:
                                 f"drill {s.data.drilling_minutes}min · "
                                 f"{s.data.sparring_rounds}×{s.data.round_length_minutes}min rolls"
                             ).style(f"color: {MUTED}")
+                            for e in s.data.log_entries:
+                                ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm mt-1")
+                                with ui.row().classes("gap-1 ml-4 flex-wrap"):
+                                    for t in e.tags:
+                                        ui.label(f"{t.technique} · {t.position}") \
+                                            .classes("text-xs font-semibold px-2 py-0.5 rounded-full") \
+                                            .style(f"background-color: {ACCENT}; color: {BG};")
+
+                        elif isinstance(s.data, MmaData):
+                            parts = []
+                            if s.data.drilling_minutes:
+                                parts.append(f"drill {s.data.drilling_minutes}min")
+                            if s.data.wall_wrestling_minutes:
+                                parts.append(f"wall {s.data.wall_wrestling_minutes}min")
+                            if s.data.strikes_to_takedown_minutes:
+                                parts.append(f"S→TD {s.data.strikes_to_takedown_minutes}min")
+                            if s.data.sparring_rounds:
+                                parts.append(f"{s.data.sparring_rounds}×{s.data.round_length_minutes}min sparring")
+                            ui.label(" · ".join(parts)).style(f"color: {MUTED}")
                             for e in s.data.log_entries:
                                 ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm mt-1")
                                 with ui.row().classes("gap-1 ml-4 flex-wrap"):

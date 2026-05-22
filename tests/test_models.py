@@ -10,6 +10,7 @@ from models import (
     Exercise,
     GrapplingData,
     LogEntry,
+    MmaData,
     Session,
     StrikingData,
     Tag,
@@ -102,6 +103,30 @@ class TestCardioData:
             CardioData(discipline="cardio", activity_type="run", duration_minutes=30, intensity="extreme")
 
 
+class TestMmaData:
+    def test_minimal(self):
+        d = MmaData(discipline="mma")
+        assert d.round_length_minutes == 5  # MMA default
+        assert d.wall_wrestling_minutes == 0
+        assert d.strikes_to_takedown_minutes == 0
+
+    def test_full(self):
+        d = MmaData(
+            discipline="mma",
+            drilling_minutes=20,
+            sparring_rounds=3,
+            wall_wrestling_minutes=10,
+            strikes_to_takedown_minutes=15,
+            log_entries=[LogEntry(notes_raw="cage pummeling", category="drill")],
+        )
+        assert d.wall_wrestling_minutes == 10
+        assert d.strikes_to_takedown_minutes == 15
+
+    def test_rejects_non_mma_discipline(self):
+        with pytest.raises(ValidationError):
+            MmaData(discipline="bjj")
+
+
 class TestWeightsData:
     def test_empty(self):
         d = WeightsData(discipline="weights")
@@ -138,6 +163,14 @@ class TestSessionDiscriminator:
         )
         assert isinstance(s.data, CardioData)
         assert s.data.activity_type == "run"
+
+    def test_mma_session(self):
+        s = Session(
+            **self._kwargs(),
+            data=MmaData(discipline="mma", drilling_minutes=20, wall_wrestling_minutes=10),
+        )
+        assert isinstance(s.data, MmaData)
+        assert s.data.wall_wrestling_minutes == 10
 
     def test_weights_session(self):
         s = Session(
