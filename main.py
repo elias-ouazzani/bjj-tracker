@@ -12,9 +12,10 @@ import os
 from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
-from nicegui import ui
+from nicegui import app, ui
 
 from ai import extract_tags
+from auth import verify_id_token
 from db import delete_session, list_sessions, save_session
 from models import (
     CardioData,
@@ -28,6 +29,52 @@ from models import (
 )
 
 load_dotenv()
+
+
+@app.middleware("http")
+async def _add_coop_header(request, call_next):
+    """Allow Firebase Auth popup to postMessage back. Without this,
+    modern browsers silently close the sign-in popup before its result
+    reaches our JS."""
+    response = await call_next(request)
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
+    return response
+
+
+# Firebase web SDK config — public, not a secret. Safe to embed.
+FIREBASE_CONFIG_JS = """{
+  apiKey: "AIzaSyDNrJL5vN4TFSzlBmh8gSjxW0jWy3Ir9js",
+  authDomain: "atheal-internship-elias.firebaseapp.com",
+  projectId: "atheal-internship-elias",
+  storageBucket: "atheal-internship-elias.firebasestorage.app",
+  messagingSenderId: "264025165631",
+  appId: "1:264025165631:web:706577eb5755308c61cd8a"
+}"""
+
+
+def _inject_firebase_sdk() -> None:
+    """Embed the Firebase Auth JS SDK + expose sign-in/sign-out helpers
+    on window. Called from /login and / so both pages can drive auth."""
+    ui.add_head_html(f"""
+    <script type="module">
+      import {{ initializeApp }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
+      import {{ getAuth, GoogleAuthProvider, signInWithPopup, signOut }}
+        from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
+
+      const fbApp = initializeApp({FIREBASE_CONFIG_JS});
+      const auth = getAuth(fbApp);
+
+      window.firebaseSignIn = async () => {{
+        const provider = new GoogleAuthProvider();
+        const result = await signInWithPopup(auth, provider);
+        return await result.user.getIdToken();
+      }};
+      window.firebaseSignOut = async () => {{
+        await signOut(auth);
+      }};
+    </script>
+    """)
+
 
 # ---------------- Design tokens ----------------
 
@@ -68,9 +115,6 @@ DISCIPLINE_LABELS: dict[str, str] = {
     "cardio": "Cardio",
     "weights": "Weights",
 }
-
-# Stub until Firebase Auth lands in Phase C
-STUB_USER_ID = "stub-user-1"
 
 DISCIPLINES = list(DISCIPLINE_COLORS.keys())
 INTENSITIES = ["low", "moderate", "high"]
@@ -143,10 +187,54 @@ def _new_exercise_row(container, exercises, name="", sets=3, reps=10, weight_kg=
                 .bind_value(state, "weight_kg")
 
 
-# ---------------- Page ----------------
+# ---------------- Pages ----------------
+
+@ui.page("/login")
+def login_page() -> None:
+    """Sign-in page. Popup Google OAuth via Firebase, verify token
+    server-side, store uid in session, redirect to /."""
+    _inject_firebase_sdk()
+    ui.colors(primary=ACCENT)
+    ui.query("body").style(
+        f"background-color: {BG}; color: {TEXT}; "
+        f"font-family: 'JetBrains Mono', monospace;"
+    )
+
+    async def on_sign_in() -> None:
+        try:
+            token = await ui.run_javascript(
+                "return await window.firebaseSignIn();", timeout=120,
+            )
+            decoded = verify_id_token(token)
+            app.storage.user["uid"] = decoded["uid"]
+            app.storage.user["email"] = decoded.get("email", "")
+            app.storage.user["name"] = decoded.get("name", decoded.get("email", "user"))
+            ui.navigate.to("/")
+        except Exception as exc:
+            ui.notify(f"Sign-in failed: {exc}", color="negative")
+
+    with ui.column().classes("items-center justify-center w-full min-h-screen gap-4 p-6"):
+        ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 4rem;")
+        ui.label("Strain").classes("text-4xl font-bold tracking-wide").style(f"color: {TEXT}")
+        ui.label("Training and fitness tracker").style(f"color: {MUTED}")
+        ui.button("Sign in with Google", on_click=on_sign_in, icon="login") \
+            .props("size=lg") \
+            .style(f"background-color: {ACCENT}; color: {BG}; margin-top: 1rem;")
+        ui.label("Each user's sessions stay private to them.") \
+            .classes("text-xs mt-4").style(f"color: {MUTED}")
+
 
 @ui.page("/")
 def index() -> None:
+    # Auth gate — redirect unauthenticated visitors to /login.
+    if not app.storage.user.get("uid"):
+        ui.navigate.to("/login")
+        return
+
+    current_user_id: str = app.storage.user["uid"]
+    current_user_name: str = app.storage.user.get("name", "user")
+
+    _inject_firebase_sdk()
     ui.colors(primary=ACCENT)
     ui.query("body").style(
         f"background-color: {BG}; color: {TEXT}; "
@@ -191,6 +279,14 @@ def index() -> None:
         }}
     """)
 
+    async def sign_out() -> None:
+        try:
+            await ui.run_javascript("await window.firebaseSignOut();", timeout=10)
+        except Exception:
+            pass
+        app.storage.user.clear()
+        ui.navigate.to("/login")
+
     # ---- Header ----
     with ui.header().classes("app-header items-center px-6 py-3").props("elevated=false"):
         with ui.row().classes("items-center gap-3 w-full max-w-5xl mx-auto"):
@@ -198,6 +294,10 @@ def index() -> None:
             with ui.column().classes("gap-0"):
                 ui.label("Strain").classes("text-xl font-bold tracking-wide").style(f"color: {TEXT}")
                 ui.label("Training and fitness tracker").classes("text-xs").style(f"color: {MUTED}")
+            ui.space()
+            ui.label(f"Hi, {current_user_name}").classes("text-sm").style(f"color: {MUTED}")
+            ui.button(icon="logout", on_click=sign_out) \
+                .props("flat dense round").style(f"color: {MUTED}").tooltip("Sign out")
 
     # ---- Form state (shared across tabs) ----
     today = date.today()
@@ -243,7 +343,7 @@ def index() -> None:
                     week_start = datetime.combine(end.date() - timedelta(days=end.weekday()), datetime.min.time())
                     month_start = end - timedelta(days=30)
                     try:
-                        month_sessions = list_sessions(STUB_USER_ID, month_start, end)
+                        month_sessions = list_sessions(current_user_id, month_start, end)
                     except Exception:
                         ui.label("Could not load stats.").style(f"color: {MUTED}")
                         return
@@ -288,7 +388,7 @@ def index() -> None:
                     def recent_snapshot() -> None:
                         end = datetime.now()
                         try:
-                            sessions = list_sessions(STUB_USER_ID, end - timedelta(days=30), end)
+                            sessions = list_sessions(current_user_id, end - timedelta(days=30), end)
                         except Exception as exc:
                             ui.label(f"Could not load: {exc}").style(f"color: {MUTED}")
                             return
@@ -526,7 +626,7 @@ def index() -> None:
                             started = datetime.fromisoformat(f"{session_state['date']}T{session_state['time']}:00")
                             session = Session(
                                 id=editing_id["value"],
-                                user_id=STUB_USER_ID,
+                                user_id=current_user_id,
                                 started_at=started,
                                 notes=session_state["notes"] or None,
                                 data=data,
@@ -588,7 +688,7 @@ def index() -> None:
                     end = datetime.now()
                     start = end - timedelta(days=30)
                     try:
-                        sessions = list_sessions(STUB_USER_ID, start, end)
+                        sessions = list_sessions(current_user_id, start, end)
                     except Exception as exc:
                         ui.label(f"Could not load history: {exc}").style(f"color: {MUTED}")
                         return
@@ -688,4 +788,12 @@ def index() -> None:
 
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("PORT", 8080))
-    ui.run(host="0.0.0.0", port=port, title="Strain — Training and fitness tracker", dark=True, reload=False)
+    # storage_secret encrypts the session cookie that backs app.storage.user.
+    # In production set STORAGE_SECRET via Cloud Run env var (Secret Manager).
+    storage_secret = os.environ.get("STORAGE_SECRET", "dev-only-not-for-production")
+    ui.run(
+        host="0.0.0.0", port=port,
+        title="Strain — Training and fitness tracker",
+        dark=True, reload=False,
+        storage_secret=storage_secret,
+    )
