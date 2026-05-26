@@ -16,6 +16,12 @@ from nicegui import app, ui
 
 from ai import extract_tags
 from auth import verify_id_token
+from charts import (
+    current_streak,
+    discipline_totals,
+    total_minutes,
+    weekly_discipline_minutes,
+)
 from db import delete_session, list_sessions, save_session
 from models import (
     CardioData,
@@ -118,39 +124,6 @@ DISCIPLINE_LABELS: dict[str, str] = {
 
 DISCIPLINES = list(DISCIPLINE_COLORS.keys())
 INTENSITIES = ["low", "moderate", "high"]
-
-
-# ---------------- Aggregation helpers ----------------
-
-def _total_minutes(data) -> int:
-    """Total training minutes for a session — used for stats."""
-    if isinstance(data, GrapplingData):
-        return data.drilling_minutes + data.sparring_rounds * data.round_length_minutes
-    if isinstance(data, StrikingData):
-        return data.bag_minutes + data.pad_minutes + data.sparring_rounds * data.round_length_minutes
-    if isinstance(data, MmaData):
-        return (
-            data.drilling_minutes
-            + data.wall_wrestling_minutes
-            + data.strikes_to_takedown_minutes
-            + data.sparring_rounds * data.round_length_minutes
-        )
-    if isinstance(data, (CardioData, WeightsData)):
-        return data.duration_minutes
-    return 0
-
-
-def _current_streak(sessions: list[Session]) -> int:
-    """Consecutive days (back from today) with at least one session."""
-    if not sessions:
-        return 0
-    by_day = {s.started_at.date() for s in sessions}
-    streak = 0
-    day = date.today()
-    while day in by_day:
-        streak += 1
-        day = day - timedelta(days=1)
-    return streak
 
 
 # ---------------- Form row helpers ----------------
@@ -348,9 +321,9 @@ def index() -> None:
                         ui.label("Could not load stats.").style(f"color: {MUTED}")
                         return
                     week_sessions = [s for s in month_sessions if s.started_at >= week_start]
-                    week_mat_min = sum(_total_minutes(s.data) for s in week_sessions)
-                    streak = _current_streak(month_sessions)
-                    total_min = sum(_total_minutes(s.data) for s in month_sessions)
+                    week_mat_min = sum(total_minutes(s.data) for s in week_sessions)
+                    streak = current_streak(month_sessions)
+                    total_min = sum(total_minutes(s.data) for s in month_sessions)
                     discipline_count = len({s.data.discipline for s in month_sessions})
 
                     def tile(icon, label, value, sub, big=False, pulse=False, color=ACCENT):
@@ -380,6 +353,117 @@ def index() -> None:
 
                 stats_panel()
 
+                # ---- Charts (weekly stacked bar + discipline donut) ----
+                @ui.refreshable
+                def charts_row() -> None:
+                    end = datetime.now()
+                    try:
+                        month_sessions = list_sessions(current_user_id, end - timedelta(days=60), end)
+                    except Exception:
+                        return
+
+                    weekly = weekly_discipline_minutes(month_sessions, n_weeks=8)
+                    totals = discipline_totals(
+                        [s for s in month_sessions if s.started_at >= end - timedelta(days=30)]
+                    )
+
+                    with ui.row().classes("w-full gap-4 flex-wrap"):
+                        # --- Weekly stacked bar chart ---
+                        with ui.card().classes("flex-1").style(
+                            f"background-color: {SURFACE}; min-width: 360px;"
+                        ):
+                            ui.label("Last 8 weeks · minutes by discipline") \
+                                .classes("text-sm font-bold mb-2").style(f"color: {TEXT}")
+                            if not weekly["series"]:
+                                with ui.column().classes("empty-state w-full items-center gap-2"):
+                                    ui.icon("bar_chart").style(f"color: {MUTED}; font-size: 2.5rem;")
+                                    ui.label("Not enough data yet.").classes("text-sm")
+                            else:
+                                bar_series = [
+                                    {
+                                        "name": DISCIPLINE_LABELS.get(d, d),
+                                        "type": "bar",
+                                        "stack": "total",
+                                        "data": values,
+                                        "itemStyle": {"color": DISCIPLINE_COLORS.get(d, ACCENT)},
+                                    }
+                                    for d, values in weekly["series"].items()
+                                ]
+                                ui.echart({
+                                    "tooltip": {
+                                        "trigger": "axis",
+                                        "axisPointer": {"type": "shadow"},
+                                        "backgroundColor": SURFACE,
+                                        "borderColor": MUTED,
+                                        "textStyle": {"color": TEXT},
+                                    },
+                                    "legend": {
+                                        "textStyle": {"color": MUTED},
+                                        "top": 0,
+                                    },
+                                    "grid": {"left": 40, "right": 16, "top": 36, "bottom": 24},
+                                    "xAxis": {
+                                        "type": "category",
+                                        "data": weekly["weeks"],
+                                        "axisLabel": {"color": MUTED, "fontSize": 10},
+                                        "axisLine": {"lineStyle": {"color": MUTED}},
+                                    },
+                                    "yAxis": {
+                                        "type": "value",
+                                        "axisLabel": {"color": MUTED, "fontSize": 10},
+                                        "splitLine": {"lineStyle": {"color": "#2a2925"}},
+                                    },
+                                    "series": bar_series,
+                                }).classes("w-full").style("height: 280px;")
+
+                        # --- Discipline donut ---
+                        with ui.card().classes("flex-1").style(
+                            f"background-color: {SURFACE}; min-width: 280px;"
+                        ):
+                            ui.label("Last 30 days · discipline split") \
+                                .classes("text-sm font-bold mb-2").style(f"color: {TEXT}")
+                            if not totals:
+                                with ui.column().classes("empty-state w-full items-center gap-2"):
+                                    ui.icon("donut_large").style(f"color: {MUTED}; font-size: 2.5rem;")
+                                    ui.label("Not enough data yet.").classes("text-sm")
+                            else:
+                                pie_data = [
+                                    {
+                                        "value": minutes,
+                                        "name": DISCIPLINE_LABELS.get(d, d),
+                                        "itemStyle": {"color": DISCIPLINE_COLORS.get(d, ACCENT)},
+                                    }
+                                    for d, minutes in sorted(totals.items(), key=lambda x: -x[1])
+                                ]
+                                ui.echart({
+                                    "tooltip": {
+                                        "trigger": "item",
+                                        "formatter": "{b}: {c} min ({d}%)",
+                                        "backgroundColor": SURFACE,
+                                        "borderColor": MUTED,
+                                        "textStyle": {"color": TEXT},
+                                    },
+                                    "legend": {
+                                        "textStyle": {"color": MUTED},
+                                        "orient": "vertical",
+                                        "left": "left",
+                                        "top": "middle",
+                                    },
+                                    "series": [{
+                                        "name": "Minutes",
+                                        "type": "pie",
+                                        "radius": ["45%", "70%"],
+                                        "center": ["65%", "50%"],
+                                        "avoidLabelOverlap": True,
+                                        "itemStyle": {"borderColor": SURFACE, "borderWidth": 2},
+                                        "label": {"show": False},
+                                        "labelLine": {"show": False},
+                                        "data": pie_data,
+                                    }],
+                                }).classes("w-full").style("height: 280px;")
+
+                charts_row()
+
                 # Recent sessions snapshot (last 5)
                 with ui.card().classes("w-full").style(f"background-color: {SURFACE}"):
                     ui.label("Recent activity").classes("text-lg font-bold mb-2")
@@ -407,7 +491,7 @@ def index() -> None:
                                         f"{DISCIPLINE_LABELS.get(s.data.discipline, s.data.discipline)} · "
                                         f"{s.started_at.strftime('%b %d %H:%M')}"
                                     ).classes("text-sm font-semibold").style(f"color: {TEXT}")
-                                    ui.label(f"{_total_minutes(s.data)} min").style(f"color: {MUTED}").classes("text-xs")
+                                    ui.label(f"{total_minutes(s.data)} min").style(f"color: {MUTED}").classes("text-xs")
 
                     recent_snapshot()
 
@@ -636,6 +720,7 @@ def index() -> None:
                             editing_id["value"] = None
                             reset_form()
                             stats_panel.refresh()
+                            charts_row.refresh()
                             recent_snapshot.refresh()
                             history_container.refresh()
 
@@ -676,6 +761,7 @@ def index() -> None:
                             dialog.close()
                             ui.notify("Deleted", color="warning")
                             stats_panel.refresh()
+                            charts_row.refresh()
                             recent_snapshot.refresh()
                             history_container.refresh()
                         with ui.row().classes("justify-end gap-2 w-full"):
@@ -713,7 +799,7 @@ def index() -> None:
                                     ui.label(
                                         f"{label} · {s.started_at.strftime('%a %b %d · %H:%M')}"
                                     ).classes("font-bold").style(f"color: {TEXT}")
-                                    ui.label(f"{_total_minutes(s.data)} total minutes") \
+                                    ui.label(f"{total_minutes(s.data)} total minutes") \
                                         .classes("text-xs").style(f"color: {MUTED}")
                                 ui.button(icon="delete", on_click=lambda sid=s.id: on_delete(sid)) \
                                     .props("flat dense round size=sm").style(f"color: {MUTED}")
