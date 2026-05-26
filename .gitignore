@@ -27,3 +27,6 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# NiceGUI runtime (session storage backing files)
+.nicegui/
