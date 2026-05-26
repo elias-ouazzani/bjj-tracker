@@ -12,9 +12,10 @@ import os
 from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
-from nicegui import ui
+from nicegui import app, ui
 
 from ai import extract_tags
+from auth import verify_id_token
 from db import delete_session, list_sessions, save_session
 from models import (
     CardioData,
@@ -29,6 +30,50 @@ from models import (
 
 load_dotenv()
 
+
+@app.middleware("http")
+async def _add_coop_header(request, call_next):
+    """Allow the Firebase Auth popup to postMessage results back to us.
+    Without this header, modern browsers silently close the popup before
+    the auth result reaches our JS, and sign-in appears to do nothing."""
+    response = await call_next(request)
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
+    return response
+
+# Firebase web SDK config — public, not a secret. Safe to embed.
+FIREBASE_CONFIG_JS = """{
+  apiKey: "AIzaSyDNrJL5vN4TFSzlBmh8gSjxW0jWy3Ir9js",
+  authDomain: "atheal-internship-elias.firebaseapp.com",
+  projectId: "atheal-internship-elias",
+  storageBucket: "atheal-internship-elias.firebasestorage.app",
+  messagingSenderId: "264025165631",
+  appId: "1:264025165631:web:706577eb5755308c61cd8a"
+}"""
+
+
+def _inject_firebase_sdk() -> None:
+    """Embed the Firebase Auth JS SDK and expose sign-in / sign-out helpers
+    on the window object. Idempotent — calling on multiple pages is fine."""
+    ui.add_head_html(f"""
+    <script type="module">
+      import {{ initializeApp }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
+      import {{ getAuth, GoogleAuthProvider, signInWithPopup, signOut }}
+        from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
+
+      const fbApp = initializeApp({FIREBASE_CONFIG_JS});
+      const auth = getAuth(fbApp);
+
+      window.firebaseSignIn = async () => {{
+        const provider = new GoogleAuthProvider();
+        const result = await signInWithPopup(auth, provider);
+        return await result.user.getIdToken();
+      }};
+      window.firebaseSignOut = async () => {{
+        await signOut(auth);
+      }};
+    </script>
+    """)
+
 # Design tokens
 BG = "#0F0F0D"
 SURFACE = "#1C1B18"
@@ -36,8 +81,8 @@ ACCENT = "#E8A957"
 TEXT = "#FFFFFF"
 MUTED = "#888880"
 
-# Stub until Firebase Auth lands in Phase C
-STUB_USER_ID = "stub-user-1"
+# Current user comes from app.storage.user after Firebase Auth sign-in.
+# Pre-auth stub is gone — every page using the app now requires a signed-in user.
 
 DISCIPLINES = ["bjj", "wrestling", "mma", "boxing", "kickboxing", "cardio", "weights"]
 INTENSITIES = ["low", "moderate", "high"]
@@ -95,8 +140,50 @@ def _new_exercise_row(container, exercises, name="", sets=3, reps=10, weight_kg=
                 .bind_value(state, "weight_kg")
 
 
+@ui.page("/login")
+def login_page() -> None:
+    """Sign-in page. Pops up Google OAuth via Firebase JS SDK, verifies the
+    returned ID token server-side, stores the user's UID in session storage,
+    then redirects to /."""
+    _inject_firebase_sdk()
+    ui.colors(primary=ACCENT)
+    ui.query("body").style(f"background-color: {BG}; color: {TEXT}; font-family: 'JetBrains Mono', monospace;")
+
+    async def on_sign_in() -> None:
+        try:
+            token = await ui.run_javascript(
+                "return await window.firebaseSignIn();", timeout=120,
+            )
+            decoded = verify_id_token(token)
+            app.storage.user["uid"] = decoded["uid"]
+            app.storage.user["email"] = decoded.get("email", "")
+            app.storage.user["name"] = decoded.get("name", decoded.get("email", "user"))
+            ui.navigate.to("/")
+        except Exception as exc:
+            ui.notify(f"Sign-in failed: {exc}", color="negative")
+
+    with ui.column().classes("items-center justify-center w-full min-h-screen gap-4 p-6"):
+        ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 4rem;")
+        ui.label("Strain").classes("text-4xl font-bold tracking-wide").style(f"color: {TEXT}")
+        ui.label("Training and fitness tracker").style(f"color: {MUTED}")
+        ui.button("Sign in with Google", on_click=on_sign_in, icon="login") \
+            .props("size=lg") \
+            .style(f"background-color: {ACCENT}; color: {BG}; margin-top: 1rem;")
+        ui.label("Each user's sessions stay private to them.") \
+            .classes("text-xs mt-4").style(f"color: {MUTED}")
+
+
 @ui.page("/")
 def index() -> None:
+    # Auth gate — kick to /login if no signed-in user in this browser session.
+    if not app.storage.user.get("uid"):
+        ui.navigate.to("/login")
+        return
+
+    current_user_id: str = app.storage.user["uid"]
+    current_user_name: str = app.storage.user.get("name", "user")
+
+    _inject_firebase_sdk()
     ui.colors(primary=ACCENT)
     ui.query("body").style(f"background-color: {BG}; color: {TEXT}; font-family: 'JetBrains Mono', monospace;")
     ui.add_css("""
@@ -108,8 +195,23 @@ def index() -> None:
         .score-pulse { animation: scoreflash 0.7s ease-out; transform-origin: center; }
     """)
 
+    async def sign_out() -> None:
+        # Best-effort browser-side sign-out (clears Firebase's local persistence)
+        try:
+            await ui.run_javascript("await window.firebaseSignOut();", timeout=10)
+        except Exception:
+            pass
+        app.storage.user.clear()
+        ui.navigate.to("/login")
+
     with ui.column().classes("w-full max-w-3xl mx-auto p-6 gap-6"):
-        ui.label("Session Tracker — Training").classes("text-3xl font-bold").style(f"color: {ACCENT}")
+        with ui.row().classes("w-full items-center"):
+            ui.label("Session Tracker — Training") \
+                .classes("text-3xl font-bold flex-grow").style(f"color: {ACCENT}")
+            ui.label(f"Hi, {current_user_name}").classes("text-sm") \
+                .style(f"color: {MUTED}")
+            ui.button(icon="logout", on_click=sign_out) \
+                .props("flat dense round").style(f"color: {MUTED}").tooltip("Sign out")
 
         # ---- Log section ----
         with ui.card().classes("w-full").style(f"background-color: {SURFACE}"):
@@ -347,7 +449,7 @@ def index() -> None:
                 started = datetime.fromisoformat(f"{session_state['date']}T{session_state['time']}:00")
                 session = Session(
                     id=editing_id["value"],
-                    user_id=STUB_USER_ID,
+                    user_id=current_user_id,
                     started_at=started,
                     notes=session_state["notes"] or None,
                     data=data,
@@ -404,7 +506,7 @@ def index() -> None:
             week_start = datetime.combine(end.date() - timedelta(days=end.weekday()), datetime.min.time())
             month_start = end - timedelta(days=30)
             try:
-                month_sessions = list_sessions(STUB_USER_ID, month_start, end)
+                month_sessions = list_sessions(current_user_id, month_start, end)
             except Exception:
                 return
             week_sessions = [s for s in month_sessions if s.started_at >= week_start]
@@ -443,7 +545,7 @@ def index() -> None:
                 end = datetime.now()
                 start = end - timedelta(days=30)
                 try:
-                    sessions = list_sessions(STUB_USER_ID, start, end)
+                    sessions = list_sessions(current_user_id, start, end)
                 except Exception as exc:
                     ui.label(f"Could not load history: {exc}").style(f"color: {MUTED}")
                     return
@@ -528,4 +630,12 @@ def index() -> None:
 
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("PORT", 8080))
-    ui.run(host="0.0.0.0", port=port, title="Training Tracker", dark=True, reload=False)
+    # storage_secret encrypts the session cookie that backs app.storage.user.
+    # In production set STORAGE_SECRET via Cloud Run env var (Secret Manager).
+    storage_secret = os.environ.get("STORAGE_SECRET", "dev-only-not-for-production")
+    ui.run(
+        host="0.0.0.0", port=port,
+        title="Training Tracker",
+        dark=True, reload=False,
+        storage_secret=storage_secret,
+    )
