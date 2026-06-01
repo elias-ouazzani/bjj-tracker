@@ -8,7 +8,7 @@ on:
 
 env:
   GCP_REGION: europe-west1
-  SERVICE_NAME: strain
+  SERVICE_NAME: bjj-tracker
   IMAGE_REPO: bjj-tracker
 
 jobs:

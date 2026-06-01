@@ -12,6 +12,7 @@ import os
 from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
+from fastapi import Request
 from nicegui import app, ui
 
 from ai import extract_tags
@@ -59,27 +60,65 @@ FIREBASE_CONFIG_JS = """{
 
 
 def _inject_firebase_sdk() -> None:
-    """Embed the Firebase Auth JS SDK + expose sign-in/sign-out helpers
-    on window. Called from /login and / so both pages can drive auth."""
+    """Embed Firebase Auth JS SDK using signInWithRedirect (Safari/iOS blocks popups)."""
     ui.add_head_html(f"""
     <script type="module">
       import {{ initializeApp }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
-      import {{ getAuth, GoogleAuthProvider, signInWithPopup, signOut }}
-        from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
+      import {{
+        getAuth,
+        GoogleAuthProvider,
+        signInWithRedirect,
+        getRedirectResult,
+        signOut
+      }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 
       const fbApp = initializeApp({FIREBASE_CONFIG_JS});
       const auth = getAuth(fbApp);
 
+      getRedirectResult(auth)
+        .then(async (result) => {{
+          if (!result || !result.user) return;
+          const idToken = await result.user.getIdToken();
+          const resp = await fetch('/auth/callback', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            credentials: 'same-origin',
+            body: JSON.stringify({{ idToken }})
+          }});
+          if (resp.ok) {{
+            window.location.replace('/');
+          }} else {{
+            console.error('auth callback failed:', resp.status, await resp.text());
+          }}
+        }})
+        .catch((err) => console.error('getRedirectResult failed:', err));
+
       window.firebaseSignIn = async () => {{
         const provider = new GoogleAuthProvider();
-        const result = await signInWithPopup(auth, provider);
-        return await result.user.getIdToken();
+        await signInWithRedirect(auth, provider);
       }};
       window.firebaseSignOut = async () => {{
         await signOut(auth);
       }};
     </script>
     """)
+
+
+@app.post("/auth/callback")
+async def auth_callback(request: Request) -> dict:
+    """Verify Firebase ID token (sent by JS after Google redirect) and populate session."""
+    body = await request.json()
+    id_token = body.get("idToken")
+    if not id_token:
+        return {"ok": False, "error": "missing idToken"}
+    try:
+        decoded = verify_id_token(id_token)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    app.storage.user["uid"] = decoded["uid"]
+    app.storage.user["email"] = decoded.get("email", "")
+    app.storage.user["name"] = decoded.get("name", decoded.get("email", "user"))
+    return {"ok": True}
 
 
 # ---------------- Design tokens ----------------
@@ -173,24 +212,15 @@ def login_page() -> None:
         f"font-family: 'JetBrains Mono', monospace;"
     )
 
-    async def on_sign_in() -> None:
-        try:
-            token = await ui.run_javascript(
-                "return await window.firebaseSignIn();", timeout=120,
-            )
-            decoded = verify_id_token(token)
-            app.storage.user["uid"] = decoded["uid"]
-            app.storage.user["email"] = decoded.get("email", "")
-            app.storage.user["name"] = decoded.get("name", decoded.get("email", "user"))
-            ui.navigate.to("/")
-        except Exception as exc:
-            ui.notify(f"Sign-in failed: {exc}", color="negative")
-
     with ui.column().classes("items-center justify-center w-full min-h-screen gap-4 p-6"):
         ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 4rem;")
         ui.label("Strain").classes("text-4xl font-bold tracking-wide").style(f"color: {TEXT}")
         ui.label("Training and fitness tracker").style(f"color: {MUTED}")
-        ui.button("Sign in with Google", on_click=on_sign_in, icon="login") \
+        ui.button(
+            "Sign in with Google",
+            on_click=lambda: ui.run_javascript("window.firebaseSignIn();"),
+            icon="login",
+        ) \
             .props("size=lg") \
             .style(f"background-color: {ACCENT}; color: {BG}; margin-top: 1rem;")
         ui.label("Each user's sessions stay private to them.") \
