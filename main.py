@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from nicegui import app, ui
 
 from ai import extract_tags
@@ -37,6 +38,9 @@ from models import (
 )
 
 load_dotenv()
+
+AUTH_COOKIE_NAME = "strain_auth"
+AUTH_COOKIE_MAX_AGE = 14 * 24 * 60 * 60
 
 
 @app.middleware("http")
@@ -64,6 +68,33 @@ FIREBASE_CONFIG_JS = """{
   messagingSenderId: "264025165631",
   appId: "1:264025165631:web:706577eb5755308c61cd8a"
 }"""
+
+
+def _auth_serializer() -> URLSafeTimedSerializer:
+    secret = os.environ.get("STORAGE_SECRET", "dev-only-not-for-production")
+    return URLSafeTimedSerializer(secret, salt="strain-auth")
+
+
+def _make_auth_cookie(decoded: dict) -> str:
+    return _auth_serializer().dumps({
+        "uid": decoded["uid"],
+        "email": decoded.get("email", ""),
+        "name": decoded.get("name", decoded.get("email", "user")),
+    })
+
+
+def _read_auth_cookie(request: Request) -> dict | None:
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not token:
+        return None
+    try:
+        return _auth_serializer().loads(token, max_age=AUTH_COOKIE_MAX_AGE)
+    except BadSignature:
+        return None
+
+
+def _cookie_is_secure(request: Request) -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
 
 
 def _inject_firebase_sdk() -> None:
@@ -238,14 +269,25 @@ async def auth_callback(request: Request):
         readback = auth_session.get("uid", "MISSING")
     except Exception as exc:
         return JSONResponse({"ok": False, "step": "session_write", "error": str(exc)}, status_code=500)
-    return {"ok": True, "uid": decoded["uid"], "session_uid_readback": readback}
+    response = JSONResponse({"ok": True, "uid": decoded["uid"], "session_uid_readback": readback})
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        _make_auth_cookie(decoded),
+        max_age=AUTH_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=_cookie_is_secure(request),
+        samesite="lax",
+    )
+    return response
 
 
 @app.post("/auth/logout")
 async def auth_logout(request: Request):
     """Clear the encrypted browser session cookie used for auth."""
     request.session.clear()
-    return {"ok": True}
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(AUTH_COOKIE_NAME)
+    return response
 
 
 # ---------------- Design tokens ----------------
@@ -358,7 +400,7 @@ def login_page() -> None:
 @ui.page("/")
 def index(request: Request) -> None:
     # Auth gate — redirect unauthenticated visitors to /login.
-    auth_session = request.session
+    auth_session = _read_auth_cookie(request) or request.session
     if not auth_session.get("uid"):
         ui.navigate.to("/login")
         return

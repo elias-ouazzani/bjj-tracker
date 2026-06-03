@@ -1,5 +1,6 @@
 nicegui>=2.24
 firebase-admin>=6.5
+itsdangerous>=2.2
 pydantic>=2.10,<3
 pydantic-ai
 python-dotenv>=1.0
