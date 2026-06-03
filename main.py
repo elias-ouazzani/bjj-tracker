@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from nicegui import app, ui
 
 from ai import extract_tags
@@ -49,6 +50,12 @@ async def _add_coop_header(request, call_next):
 
 
 # Firebase web SDK config — public, not a secret. Safe to embed.
+# authDomain must match the OAuth client's registered redirect URI, which
+# Firebase auto-pins to <project>.firebaseapp.com. Using a Cloud Run host
+# here causes Google OAuth to reject with redirect_uri_mismatch.
+# Trade-off: cross-origin iframe means Safari ITP blocks signInWithRedirect.
+# We mitigate by trying signInWithPopup first (works on desktop) and only
+# falling back to redirect if the popup is blocked.
 FIREBASE_CONFIG_JS = """{
   apiKey: "AIzaSyDNrJL5vN4TFSzlBmh8gSjxW0jWy3Ir9js",
   authDomain: "atheal-internship-elias.firebaseapp.com",
@@ -60,64 +67,184 @@ FIREBASE_CONFIG_JS = """{
 
 
 def _inject_firebase_sdk() -> None:
-    """Embed Firebase Auth JS SDK using signInWithRedirect (Safari/iOS blocks popups)."""
+    """Embed Firebase Auth JS SDK.
+
+    Pops up Google account picker on desktop (popup), falls back to redirect
+    if popup is blocked (iOS Safari). On-page #auth-status div shows what's
+    happening at every step — Elias debugs on Windows+iPhone with no easy
+    devtools access, see [[feedback-debug-without-devtools]].
+    """
     ui.add_head_html(f"""
+    <style>
+      #auth-status {{
+        position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+        background: #1C1B18; color: #E8A957; padding: 0.5rem 1rem;
+        font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
+        border-bottom: 1px solid #E8A957; white-space: pre-wrap;
+        max-height: 40vh; overflow-y: auto; display: none;
+      }}
+    </style>
+    <div id="auth-status"></div>
     <script type="module">
       import {{ initializeApp }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
       import {{
         getAuth,
         GoogleAuthProvider,
+        signInWithPopup,
         signInWithRedirect,
         getRedirectResult,
+        onAuthStateChanged,
         signOut
       }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 
-      const fbApp = initializeApp({FIREBASE_CONFIG_JS});
-      const auth = getAuth(fbApp);
+      const statusEl = document.getElementById('auth-status');
+      function showStatus(msg) {{
+        if (!statusEl) return;
+        statusEl.style.display = 'block';
+        statusEl.textContent += msg + '\\n';
+        console.log('[auth]', msg);
+      }}
+      window.__authStatus = showStatus;
 
-      getRedirectResult(auth)
-        .then(async (result) => {{
-          if (!result || !result.user) return;
-          const idToken = await result.user.getIdToken();
-          const resp = await fetch('/auth/callback', {{
+      let fbApp, auth;
+      try {{
+        showStatus('init: host=' + window.location.host);
+        fbApp = initializeApp({FIREBASE_CONFIG_JS});
+        auth = getAuth(fbApp);
+        showStatus('init: ok');
+      }} catch (e) {{
+        showStatus('init FAILED: ' + e.message);
+        throw e;
+      }}
+
+      async function postCallback(user) {{
+        let idToken;
+        try {{
+          idToken = await user.getIdToken();
+          showStatus('got idToken (len=' + idToken.length + ')');
+        }} catch (e) {{
+          showStatus('getIdToken FAILED: ' + e.message);
+          return;
+        }}
+        let resp, bodyText;
+        try {{
+          resp = await fetch('/auth/callback', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
             credentials: 'same-origin',
             body: JSON.stringify({{ idToken }})
           }});
-          if (resp.ok) {{
-            window.location.replace('/');
+          bodyText = await resp.text();
+          showStatus('/auth/callback ' + resp.status + ': ' + bodyText.slice(0, 200));
+        }} catch (e) {{
+          showStatus('fetch /auth/callback threw: ' + e.message);
+          return;
+        }}
+        let body = null;
+        try {{ body = JSON.parse(bodyText); }} catch (e) {{}}
+        if (resp.ok && body && body.ok && body.session_uid_readback === body.uid) {{
+          if (window.location.pathname === '/') {{
+            showStatus('success, already at /');
           }} else {{
-            console.error('auth callback failed:', resp.status, await resp.text());
+            showStatus('success, redirecting to /');
+            window.location.replace('/');
+          }}
+        }} else {{
+          showStatus('callback rejected — staying on /login');
+        }}
+      }}
+
+      // onAuthStateChanged is the most reliable signal — it fires after
+      // ANY successful sign-in (popup, redirect, restored session) even if
+      // signInWithPopup's promise hangs due to popup postMessage issues.
+      // Only fires postCallback on /login: on the dashboard, the NiceGUI
+      // session cookie is what gates access, not Firebase Auth state.
+      window._authPosted = false;
+      onAuthStateChanged(auth, async (user) => {{
+        if (user && !window._authPosted && window.location.pathname === '/login') {{
+          window._authPosted = true;
+          showStatus('onAuthStateChanged: user=' + user.email);
+          await postCallback(user);
+        }}
+      }});
+
+      // Handle pending redirect result (Safari iOS path).
+      getRedirectResult(auth)
+        .then(async (result) => {{
+          if (result && result.user) {{
+            showStatus('getRedirectResult: got user ' + result.user.email);
+            // onAuthStateChanged will also fire — postCallback is guarded.
+          }} else {{
+            showStatus('getRedirectResult: no pending result');
           }}
         }})
-        .catch((err) => console.error('getRedirectResult failed:', err));
+        .catch((err) => showStatus('getRedirectResult FAILED: ' + err.code + ' ' + err.message));
 
       window.firebaseSignIn = async () => {{
+        showStatus('firebaseSignIn called');
         const provider = new GoogleAuthProvider();
-        await signInWithRedirect(auth, provider);
+        try {{
+          showStatus('trying signInWithPopup');
+          const result = await signInWithPopup(auth, provider);
+          showStatus('popup returned: ' + (result.user ? result.user.email : 'no user'));
+        }} catch (e) {{
+          showStatus('popup FAILED: ' + e.code + ' ' + e.message);
+          if (e.code === 'auth/popup-blocked' ||
+              e.code === 'auth/operation-not-supported-in-this-environment' ||
+              e.code === 'auth/cancelled-popup-request' ||
+              e.code === 'auth/popup-closed-by-user') {{
+            showStatus('falling back to redirect');
+            try {{
+              await signInWithRedirect(auth, provider);
+            }} catch (e2) {{
+              showStatus('redirect FAILED: ' + e2.code + ' ' + e2.message);
+            }}
+          }}
+        }}
       }};
       window.firebaseSignOut = async () => {{
-        await signOut(auth);
+        try {{ await signOut(auth); }} catch (e) {{ showStatus('signOut failed: ' + e.message); }}
       }};
+
+      window.handleSignInClick = () => {{
+        if (window.firebaseSignIn) {{
+          window.firebaseSignIn();
+        }} else {{
+          showStatus('ERROR: firebaseSignIn not loaded yet — wait a moment and retry');
+        }}
+      }};
+
+      showStatus('SDK ready, firebaseSignIn defined');
     </script>
     """)
 
 
 @app.post("/auth/callback")
-async def auth_callback(request: Request) -> dict:
+async def auth_callback(request: Request):
     """Verify Firebase ID token (sent by JS after Google redirect) and populate session."""
     body = await request.json()
     id_token = body.get("idToken")
     if not id_token:
-        return {"ok": False, "error": "missing idToken"}
+        return JSONResponse({"ok": False, "step": "no_token", "error": "missing idToken"}, status_code=400)
     try:
         decoded = verify_id_token(id_token)
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-    app.storage.user["uid"] = decoded["uid"]
-    app.storage.user["email"] = decoded.get("email", "")
-    app.storage.user["name"] = decoded.get("name", decoded.get("email", "user"))
+        return JSONResponse({"ok": False, "step": "verify", "error": str(exc)}, status_code=401)
+    try:
+        auth_session = request.session
+        auth_session["uid"] = decoded["uid"]
+        auth_session["email"] = decoded.get("email", "")
+        auth_session["name"] = decoded.get("name", decoded.get("email", "user"))
+        readback = auth_session.get("uid", "MISSING")
+    except Exception as exc:
+        return JSONResponse({"ok": False, "step": "session_write", "error": str(exc)}, status_code=500)
+    return {"ok": True, "uid": decoded["uid"], "session_uid_readback": readback}
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request):
+    """Clear the encrypted browser session cookie used for auth."""
+    request.session.clear()
     return {"ok": True}
 
 
@@ -216,26 +343,28 @@ def login_page() -> None:
         ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 4rem;")
         ui.label("Strain").classes("text-4xl font-bold tracking-wide").style(f"color: {TEXT}")
         ui.label("Training and fitness tracker").style(f"color: {MUTED}")
-        ui.button(
-            "Sign in with Google",
-            on_click=lambda: ui.run_javascript("window.firebaseSignIn();"),
-            icon="login",
-        ) \
-            .props("size=lg") \
-            .style(f"background-color: {ACCENT}; color: {BG}; margin-top: 1rem;")
+        # Pure client-side click handler via NiceGUI's js_handler. We CAN'T
+        # use ui.button(on_click=...) here because Firebase Hosting breaks
+        # the NiceGUI WebSocket; server-side click handlers silently no-op
+        # on iPhone when the app is reached via firebaseapp.com.
+        ui.button("Sign in with Google", icon="login") \
+            .props('size=lg') \
+            .style(f"background-color: {ACCENT}; color: {BG}; margin-top: 1rem;") \
+            .on('click', js_handler='() => window.handleSignInClick && window.handleSignInClick()')
         ui.label("Each user's sessions stay private to them.") \
             .classes("text-xs mt-4").style(f"color: {MUTED}")
 
 
 @ui.page("/")
-def index() -> None:
+def index(request: Request) -> None:
     # Auth gate — redirect unauthenticated visitors to /login.
-    if not app.storage.user.get("uid"):
+    auth_session = request.session
+    if not auth_session.get("uid"):
         ui.navigate.to("/login")
         return
 
-    current_user_id: str = app.storage.user["uid"]
-    current_user_name: str = app.storage.user.get("name", "user")
+    current_user_id: str = auth_session["uid"]
+    current_user_name: str = auth_session.get("name", "user")
 
     _inject_firebase_sdk()
     ui.colors(primary=ACCENT)
@@ -284,10 +413,12 @@ def index() -> None:
 
     async def sign_out() -> None:
         try:
-            await ui.run_javascript("await window.firebaseSignOut();", timeout=10)
+            await ui.run_javascript("""
+              await window.firebaseSignOut();
+              await fetch('/auth/logout', {method: 'POST', credentials: 'same-origin'});
+            """, timeout=10)
         except Exception:
             pass
-        app.storage.user.clear()
         ui.navigate.to("/login")
 
     # ---- Header ----
