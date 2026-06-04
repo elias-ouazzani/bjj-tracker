@@ -9,10 +9,13 @@ user's stable `uid`, which we then use as the `user_id` on Session.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
+
+log = logging.getLogger("strain.auth")
 
 
 def _ensure_initialized() -> None:
@@ -45,6 +48,9 @@ def verify_id_token(id_token: str) -> dict:
         raise ValueError("No token provided")
     _ensure_initialized()
     try:
-        return firebase_auth.verify_id_token(id_token)
+        decoded = firebase_auth.verify_id_token(id_token)
     except Exception as e:
+        log.warning("verify_id_token failed: %s", e)
         raise ValueError(f"Token verification failed: {e}") from e
+    log.debug("verify_id_token ok uid=%s", decoded.get("uid"))
+    return decoded

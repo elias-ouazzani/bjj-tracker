@@ -8,6 +8,7 @@ are written with a stub user_id; Phase C swaps this for Firebase Auth UID.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import date, datetime, timedelta
 
@@ -16,6 +17,12 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from nicegui import app, ui
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+log = logging.getLogger("strain.main")
 
 from ai import extract_tags
 from auth import verify_id_token
@@ -256,10 +263,12 @@ async def auth_callback(request: Request):
     body = await request.json()
     id_token = body.get("idToken")
     if not id_token:
+        log.warning("auth.callback step=no_token host=%s", request.url.hostname)
         return JSONResponse({"ok": False, "step": "no_token", "error": "missing idToken"}, status_code=400)
     try:
         decoded = verify_id_token(id_token)
     except Exception as exc:
+        log.warning("auth.callback step=verify error=%s", exc)
         return JSONResponse({"ok": False, "step": "verify", "error": str(exc)}, status_code=401)
     try:
         auth_session = request.session
@@ -268,7 +277,9 @@ async def auth_callback(request: Request):
         auth_session["name"] = decoded.get("name", decoded.get("email", "user"))
         readback = auth_session.get("uid", "MISSING")
     except Exception as exc:
+        log.exception("auth.callback step=session_write uid=%s", decoded.get("uid"))
         return JSONResponse({"ok": False, "step": "session_write", "error": str(exc)}, status_code=500)
+    log.info("auth.callback step=success uid=%s email=%s", decoded["uid"], decoded.get("email", ""))
     response = JSONResponse({"ok": True, "uid": decoded["uid"], "session_uid_readback": readback})
     response.set_cookie(
         AUTH_COOKIE_NAME,
@@ -284,7 +295,9 @@ async def auth_callback(request: Request):
 @app.post("/auth/logout")
 async def auth_logout(request: Request):
     """Clear the encrypted browser session cookie used for auth."""
+    uid = request.session.get("uid")
     request.session.clear()
+    log.info("auth.logout uid=%s", uid)
     response = JSONResponse({"ok": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
     return response
@@ -521,6 +534,7 @@ def index(request: Request) -> None:
                     try:
                         month_sessions = list_sessions(current_user_id, month_start, end)
                     except Exception:
+                        log.exception("stats_panel.list_sessions uid=%s", current_user_id)
                         ui.label("Could not load stats.").style(f"color: {MUTED}")
                         return
                     week_sessions = [s for s in month_sessions if s.started_at >= week_start]
@@ -563,6 +577,7 @@ def index(request: Request) -> None:
                     try:
                         month_sessions = list_sessions(current_user_id, end - timedelta(days=60), end)
                     except Exception:
+                        log.exception("charts_row.list_sessions uid=%s", current_user_id)
                         return
 
                     weekly = weekly_discipline_minutes(month_sessions, n_weeks=8)
@@ -918,7 +933,11 @@ def index(request: Request) -> None:
                                 notes=session_state["notes"] or None,
                                 data=data,
                             )
-                            save_session(session)
+                            saved = save_session(session)
+                            log.info(
+                                "session.save uid=%s id=%s discipline=%s",
+                                current_user_id, saved.id, d,
+                            )
                             ui.notify("Saved", color="positive")
                             editing_id["value"] = None
                             reset_form()
@@ -961,6 +980,7 @@ def index(request: Request) -> None:
                         ui.label("This cannot be undone.").style(f"color: {MUTED}").classes("text-sm")
                         def confirm():
                             delete_session(session_id)
+                            log.info("session.delete uid=%s id=%s", current_user_id, session_id)
                             dialog.close()
                             ui.notify("Deleted", color="warning")
                             stats_panel.refresh()
@@ -1080,6 +1100,7 @@ if __name__ in {"__main__", "__mp_main__"}:
     # storage_secret encrypts the session cookie that backs app.storage.user.
     # In production set STORAGE_SECRET via Cloud Run env var (Secret Manager).
     storage_secret = os.environ.get("STORAGE_SECRET", "dev-only-not-for-production")
+    log.info("strain.startup port=%s log_level=%s", port, logging.getLogger().getEffectiveLevel())
     ui.run(
         host="0.0.0.0", port=port,
         title="Strain — Training and fitness tracker",
