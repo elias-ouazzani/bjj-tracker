@@ -135,21 +135,51 @@ def _inject_firebase_sdk() -> None:
         signOut
       }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 
+      const __authT0 = Date.now();
+      const __authLoadId = Math.random().toString(36).slice(2, 8);
       const statusEl = document.getElementById('auth-status');
       function showStatus(msg) {{
-        if (!statusEl) return;
-        statusEl.style.display = 'block';
-        statusEl.textContent += msg + '\\n';
-        console.log('[auth]', msg);
+        const line = '+' + ((Date.now() - __authT0) / 1000).toFixed(1) + 's  ' + msg;
+        if (statusEl) {{
+          statusEl.style.display = 'block';
+          statusEl.textContent += line + '\\n';
+        }}
+        console.log('[auth]', line);
+        // Relay every breadcrumb to the server so it lands in Cloud Run logs.
+        // Elias debugs on Windows + iPhone with no devtools, so the server log
+        // is the only place we can read this timeline. Fire-and-forget — never
+        // let logging break the auth flow. See [[feedback-debug-without-devtools]].
+        try {{
+          fetch('/auth/clientlog', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            credentials: 'same-origin',
+            keepalive: true,
+            body: JSON.stringify({{
+              loadId: __authLoadId,
+              host: window.location.host,
+              path: window.location.pathname,
+              tMs: Date.now() - __authT0,
+              msg: msg
+            }})
+          }}).catch(function () {{}});
+        }} catch (e) {{}}
       }}
       window.__authStatus = showStatus;
+      window.addEventListener('error', function (e) {{
+        showStatus('window.onerror: ' + (e && e.message ? e.message : e));
+      }});
+      window.addEventListener('unhandledrejection', function (e) {{
+        var r = e && e.reason;
+        showStatus('unhandledrejection: ' + (r && (r.code || r.message) ? (r.code || r.message) : r));
+      }});
 
       let fbApp, auth;
       try {{
         showStatus('init: host=' + window.location.host);
         fbApp = initializeApp({FIREBASE_CONFIG_JS});
         auth = getAuth(fbApp);
-        showStatus('init: ok');
+        showStatus('init: ok authDomain=' + (auth.config && auth.config.authDomain));
       }} catch (e) {{
         showStatus('init FAILED: ' + e.message);
         throw e;
@@ -199,9 +229,9 @@ def _inject_firebase_sdk() -> None:
       // session cookie is what gates access, not Firebase Auth state.
       window._authPosted = false;
       onAuthStateChanged(auth, async (user) => {{
+        showStatus('onAuthStateChanged fired: ' + (user ? ('user=' + user.email) : 'no user'));
         if (user && !window._authPosted && window.location.pathname === '/login') {{
           window._authPosted = true;
-          showStatus('onAuthStateChanged: user=' + user.email);
           await postCallback(user);
         }}
       }});
@@ -221,6 +251,15 @@ def _inject_firebase_sdk() -> None:
       window.firebaseSignIn = async () => {{
         showStatus('firebaseSignIn called');
         const provider = new GoogleAuthProvider();
+        // Heartbeat: if the popup promise hangs (auth-event relay blocked by
+        // cross-origin storage partitioning), this is the only signal we are
+        // stuck waiting rather than crashed. Fires every 10s until the popup
+        // resolves/rejects — Firebase's own timeout is ~120s, so a clean run
+        // of heartbeats up to ~+120s then a 'popup FAILED' points straight at
+        // the auth-event relay rather than at our code.
+        let __popupHb = setInterval(function () {{
+          showStatus('still waiting for popup/auth-event result...');
+        }}, 10000);
         try {{
           showStatus('trying signInWithPopup');
           const result = await signInWithPopup(auth, provider);
@@ -238,6 +277,8 @@ def _inject_firebase_sdk() -> None:
               showStatus('redirect FAILED: ' + e2.code + ' ' + e2.message);
             }}
           }}
+        }} finally {{
+          clearInterval(__popupHb);
         }}
       }};
       window.firebaseSignOut = async () => {{
@@ -257,9 +298,41 @@ def _inject_firebase_sdk() -> None:
     """)
 
 
+@app.post("/auth/clientlog")
+async def auth_clientlog(request: Request):
+    """Sink for client-side auth breadcrumbs.
+
+    The login JS POSTs every showStatus() line here so the full client
+    timeline lands in the server (Cloud Run) logs — the only place we can
+    read it when debugging on a device with no devtools. Pure observability:
+    it stores nothing and always returns ok so it can never break sign-in.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    log.info(
+        "auth.clientlog load=%s host=%s path=%s t=%sms msg=%r",
+        body.get("loadId"), body.get("host"), body.get("path"),
+        body.get("tMs"), body.get("msg"),
+    )
+    return JSONResponse({"ok": True})
+
+
 @app.post("/auth/callback")
 async def auth_callback(request: Request):
     """Verify Firebase ID token (sent by JS after Google redirect) and populate session."""
+    # Log the request origin so we can confirm whether the page origin matches
+    # the Firebase authDomain — an origin mismatch is the prime suspect for the
+    # popup auth-event relay hanging (~120s) before this endpoint is ever hit.
+    log.info(
+        "auth.callback step=received host=%s xfwd_host=%s origin=%s referer=%s xfwd_proto=%s",
+        request.url.hostname,
+        request.headers.get("x-forwarded-host"),
+        request.headers.get("origin"),
+        request.headers.get("referer"),
+        request.headers.get("x-forwarded-proto"),
+    )
     body = await request.json()
     id_token = body.get("idToken")
     if not id_token:
