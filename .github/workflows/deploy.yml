@@ -70,5 +70,5 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --service-account ${{ secrets.GCP_SERVICE_ACCOUNT }} \
-            --set-secrets "ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest" \
-            --set-env-vars "FIRESTORE_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}"
+            --set-secrets "ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,STORAGE_SECRET=STORAGE_SECRET:latest" \
+            --set-env-vars "FIRESTORE_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }},LOG_LEVEL=DEBUG"
