@@ -25,7 +25,13 @@ from charts import (
     total_minutes,
     weekly_discipline_minutes,
 )
-from db import delete_session, list_sessions, save_session
+from services.sessions import (
+    SessionAccessDenied,
+    SessionNotFound,
+    delete_user_session,
+    list_user_sessions,
+    save_user_session,
+)
 from models import (
     CardioData,
     Exercise,
@@ -519,7 +525,7 @@ def index(request: Request) -> None:
                     week_start = datetime.combine(end.date() - timedelta(days=end.weekday()), datetime.min.time())
                     month_start = end - timedelta(days=30)
                     try:
-                        month_sessions = list_sessions(current_user_id, month_start, end)
+                        month_sessions = list_user_sessions(current_user_id, month_start, end)
                     except Exception:
                         ui.label("Could not load stats.").style(f"color: {MUTED}")
                         return
@@ -561,7 +567,7 @@ def index(request: Request) -> None:
                 def charts_row() -> None:
                     end = datetime.now()
                     try:
-                        month_sessions = list_sessions(current_user_id, end - timedelta(days=60), end)
+                        month_sessions = list_user_sessions(current_user_id, end - timedelta(days=60), end)
                     except Exception:
                         return
 
@@ -675,7 +681,7 @@ def index(request: Request) -> None:
                     def recent_snapshot() -> None:
                         end = datetime.now()
                         try:
-                            sessions = list_sessions(current_user_id, end - timedelta(days=30), end)
+                            sessions = list_user_sessions(current_user_id, end - timedelta(days=30), end)
                         except Exception as exc:
                             ui.label(f"Could not load: {exc}").style(f"color: {MUTED}")
                             return
@@ -918,7 +924,11 @@ def index(request: Request) -> None:
                                 notes=session_state["notes"] or None,
                                 data=data,
                             )
-                            save_session(session)
+                            try:
+                                save_user_session(current_user_id, session)
+                            except SessionAccessDenied:
+                                ui.notify("Cannot save — session belongs to another user", color="negative")
+                                return
                             ui.notify("Saved", color="positive")
                             editing_id["value"] = None
                             reset_form()
@@ -960,7 +970,12 @@ def index(request: Request) -> None:
                         ui.label("Delete this session?").classes("text-lg")
                         ui.label("This cannot be undone.").style(f"color: {MUTED}").classes("text-sm")
                         def confirm():
-                            delete_session(session_id)
+                            try:
+                                delete_user_session(current_user_id, session_id)
+                            except (SessionNotFound, SessionAccessDenied):
+                                dialog.close()
+                                ui.notify("Could not delete session", color="negative")
+                                return
                             dialog.close()
                             ui.notify("Deleted", color="warning")
                             stats_panel.refresh()
@@ -977,7 +992,7 @@ def index(request: Request) -> None:
                     end = datetime.now()
                     start = end - timedelta(days=30)
                     try:
-                        sessions = list_sessions(current_user_id, start, end)
+                        sessions = list_user_sessions(current_user_id, start, end)
                     except Exception as exc:
                         ui.label(f"Could not load history: {exc}").style(f"color: {MUTED}")
                         return
