@@ -9,10 +9,13 @@ user's stable `uid`, which we then use as the `user_id` on Session.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
+
+logger = logging.getLogger("strain.auth")
 
 
 def _ensure_initialized() -> None:
@@ -25,8 +28,11 @@ def _ensure_initialized() -> None:
         return
     cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if cred_path:
+        logger.info("firebase-admin init: key file at %s", cred_path)
         firebase_admin.initialize_app(credentials.Certificate(cred_path))
     else:
+        logger.info("firebase-admin init: Application Default Credentials "
+                    "(ambient service account on Cloud Run)")
         firebase_admin.initialize_app()
 
 

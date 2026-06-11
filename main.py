@@ -8,7 +8,9 @@ verified server-side; the user's Firebase uid is the per-session user_id.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import sys
 from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
@@ -44,6 +46,21 @@ from models import (
 )
 
 load_dotenv()
+
+# --- Logging ----------------------------------------------------------------
+# Same pattern as the auth-practice app: one basicConfig, a named logger,
+# INFO for normal events and WARNING for "the user's token was bad" cases.
+# Streamed to stdout (not the default stderr) so Cloud Run ingests it as
+# normal logs instead of tagging every line as an ERROR. Cloud Run captures
+# stdout automatically — view it in the service's Logs tab or with
+# `gcloud run services logs read strain --region europe-west1`.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("strain")
 
 AUTH_COOKIE_NAME = "strain_auth"
 AUTH_COOKIE_MAX_AGE = 14 * 24 * 60 * 60
@@ -191,11 +208,17 @@ async def auth_callback(request: Request):
     body = await request.json()
     id_token = body.get("idToken")
     if not id_token:
+        logger.warning("auth/callback: request with no idToken")
         return JSONResponse({"ok": False, "error": "missing idToken"}, status_code=400)
+    logger.info("auth/callback: received token (len=%d), verifying", len(id_token))
     try:
         decoded = verify_id_token(id_token)
     except Exception as exc:
+        # Bad/expired token is the USER's problem, not ours -> WARNING.
+        logger.warning("auth/callback: token rejected: %s", exc)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=401)
+    logger.info("auth/callback: verified uid=%s email=%s",
+                decoded["uid"], decoded.get("email"))
     response = JSONResponse({"ok": True, "uid": decoded["uid"]})
     response.set_cookie(
         AUTH_COOKIE_NAME,
@@ -205,12 +228,14 @@ async def auth_callback(request: Request):
         secure=_cookie_is_secure(request),
         samesite="lax",
     )
+    logger.info("auth/callback: session cookie set for uid=%s", decoded["uid"])
     return response
 
 
 @app.post("/auth/logout")
 async def auth_logout(request: Request):
     """Delete the signed auth cookie, logging the user out."""
+    logger.info("auth/logout: clearing session cookie")
     response = JSONResponse({"ok": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
     return response
@@ -328,8 +353,10 @@ def index(request: Request) -> None:
     # Auth gate — redirect unauthenticated visitors to /login.
     auth_session = _read_auth_cookie(request)
     if not auth_session or not auth_session.get("uid"):
+        logger.info("auth gate: unauthenticated request to / -> /login")
         ui.navigate.to("/login")
         return
+    logger.info("auth gate: authenticated uid=%s", auth_session["uid"])
 
     current_user_id: str = auth_session["uid"]
     current_user_name: str = auth_session.get("name", "user")
