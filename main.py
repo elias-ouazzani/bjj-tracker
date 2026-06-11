@@ -282,13 +282,32 @@ async def auth_logout(request: Request):
 
 
 # ---------------- Design tokens ----------------
+# Apple-Fitness-inspired dark theme: pure-black canvas, soft "floating"
+# dark-gray cards, per-discipline colors carrying the personality, amber
+# reserved for highlights (streak, active nav, primary actions).
 
-BG = "#0F0F0D"
-SURFACE = "#1C1B18"
-SURFACE_HI = "#26241F"  # slightly lighter for hover/elevated cards
+BG = "#000000"
+SURFACE = "#1C1C1E"     # card gray (Apple systemGray6 dark)
+SURFACE_HI = "#2C2C2E"  # hover / elevated
 ACCENT = "#E8A957"
 TEXT = "#FFFFFF"
-MUTED = "#888880"
+MUTED = "#8E8E93"       # Apple secondary-label gray
+
+# Clean sans for UI text; JetBrains Mono kept as brand flavor on big numbers.
+FONT_FAMILY = "'Inter', -apple-system, 'Segoe UI', sans-serif"
+
+
+def _apply_theme() -> None:
+    """Shared page theming: web fonts, primary color, body baseline."""
+    ui.add_head_html(
+        '<link rel="preconnect" href="https://fonts.googleapis.com">'
+        '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800'
+        '&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">'
+    )
+    ui.colors(primary=ACCENT)
+    ui.query("body").style(
+        f"background-color: {BG}; color: {TEXT}; font-family: {FONT_FAMILY};"
+    )
 
 # Per-discipline visual identity
 DISCIPLINE_COLORS: dict[str, str] = {
@@ -366,23 +385,28 @@ def login_page() -> None:
     """Sign-in page. Popup Google OAuth via Firebase, verify token
     server-side, store uid in session, redirect to /."""
     _inject_firebase_sdk()
-    ui.colors(primary=ACCENT)
-    ui.query("body").style(
-        f"background-color: {BG}; color: {TEXT}; "
-        f"font-family: 'JetBrains Mono', monospace;"
-    )
+    _apply_theme()
+    ui.add_css(f"""
+        .login-bubble {{
+            width: 96px; height: 96px; border-radius: 9999px;
+            display: flex; align-items: center; justify-content: center;
+            background-color: {ACCENT}26;
+        }}
+    """)
 
     with ui.column().classes("items-center justify-center w-full min-h-screen gap-4 p-6"):
-        ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 4rem;")
-        ui.label("Strain").classes("text-4xl font-bold tracking-wide").style(f"color: {TEXT}")
+        with ui.element("div").classes("login-bubble"):
+            ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 3rem;")
+        ui.label("Strain").classes("text-5xl font-extrabold tracking-tight").style(f"color: {TEXT}")
         ui.label("Training and fitness tracker").style(f"color: {MUTED}")
         # Pure client-side click handler via NiceGUI's js_handler. We CAN'T
         # use ui.button(on_click=...) here because Firebase Hosting breaks
         # the NiceGUI WebSocket; server-side click handlers silently no-op
         # on iPhone when the app is reached via firebaseapp.com.
         ui.button("Sign in with Google", icon="login") \
-            .props('size=lg') \
-            .style(f"background-color: {ACCENT}; color: {BG}; margin-top: 1rem;") \
+            .props('size=lg no-caps') \
+            .style(f"background-color: {ACCENT}; color: {BG}; margin-top: 1rem; "
+                   f"border-radius: 14px; padding: 0.6rem 1.6rem; font-weight: 600;") \
             .on('click', js_handler='() => window.handleSignInClick && window.handleSignInClick()')
         ui.label("Each user's sessions stay private to them.") \
             .classes("text-xs mt-4").style(f"color: {MUTED}")
@@ -402,11 +426,7 @@ def index(request: Request) -> None:
     current_user_name: str = auth_session.get("name", "user")
 
     _inject_firebase_sdk()
-    ui.colors(primary=ACCENT)
-    ui.query("body").style(
-        f"background-color: {BG}; color: {TEXT}; "
-        f"font-family: 'JetBrains Mono', monospace;"
-    )
+    _apply_theme()
     ui.add_css(f"""
         @keyframes scoreflash {{
             0%   {{ transform: scale(1); }}
@@ -414,6 +434,12 @@ def index(request: Request) -> None:
             100% {{ transform: scale(1); }}
         }}
         .score-pulse {{ animation: scoreflash 0.7s ease-out; transform-origin: center; }}
+
+        /* Soft "floating" cards + friendly rounded controls everywhere. */
+        .q-card {{ border-radius: 18px; box-shadow: 0 2px 12px rgba(0,0,0,0.35); }}
+        .q-btn {{ text-transform: none; }}
+        .q-btn:not(.q-btn--round) {{ border-radius: 12px; }}
+        .q-field--outlined .q-field__control {{ border-radius: 12px; }}
 
         .session-card {{
             transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
@@ -430,8 +456,9 @@ def index(request: Request) -> None:
             transform: translateY(-2px);
         }}
         .app-header {{
-            background-color: {SURFACE};
-            border-bottom: 1px solid #2a2925;
+            background-color: rgba(0,0,0,0.8);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid {SURFACE};
         }}
         .q-tab {{
             color: {MUTED} !important;
@@ -443,6 +470,38 @@ def index(request: Request) -> None:
             text-align: center;
             padding: 3rem 1rem;
             color: {MUTED};
+        }}
+
+        /* Colored icon bubbles (Apple Fitness style). */
+        .icon-bubble {{ border-radius: 9999px; display: flex; align-items: center; justify-content: center; }}
+        .bubble-lg {{ width: 60px; height: 60px; }}
+        .bubble-sm {{ width: 38px; height: 38px; }}
+
+        /* Big stat numbers keep the mono brand flavor. */
+        .stat-num {{ font-family: 'JetBrains Mono', monospace; letter-spacing: -0.02em; }}
+
+        /* Workout-picker tile grid: 2-up on phones, more on bigger screens. */
+        .disc-grid {{ display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+        @media (min-width: 640px) {{ .disc-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }} }}
+        @media (min-width: 1024px) {{ .disc-grid {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }} }}
+        .disc-tile {{ transition: transform 0.12s ease, background-color 0.12s ease; }}
+        .disc-tile:hover {{ transform: translateY(-3px); background-color: {SURFACE_HI} !important; }}
+        .disc-tile:active {{ transform: scale(0.97); }}
+
+        /* Bottom tab bar: thumb-reachable nav on phones, hidden on desktop. */
+        .bottom-nav {{
+            position: fixed; bottom: 0; left: 0; right: 0; z-index: 1000;
+            display: flex; justify-content: space-around; align-items: center;
+            background: rgba(18,18,20,0.92); backdrop-filter: blur(16px);
+            border-top: 1px solid {SURFACE};
+            padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+        }}
+        @media (max-width: 767px) {{
+            .top-tabs {{ display: none !important; }}
+            .page-content {{ padding-bottom: 96px; }}
+        }}
+        @media (min-width: 768px) {{
+            .bottom-nav {{ display: none !important; }}
         }}
     """)
 
@@ -457,14 +516,14 @@ def index(request: Request) -> None:
         ui.navigate.to("/login")
 
     # ---- Header ----
-    with ui.header().classes("app-header items-center px-6 py-3").props("elevated=false"):
-        with ui.row().classes("items-center gap-3 w-full max-w-5xl mx-auto"):
-            ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 1.8rem;")
-            with ui.column().classes("gap-0"):
-                ui.label("Strain").classes("text-xl font-bold tracking-wide").style(f"color: {TEXT}")
-                ui.label("Training and fitness tracker").classes("text-xs").style(f"color: {MUTED}")
+    with ui.header().classes("app-header items-center px-4 py-2").props("elevated=false"):
+        with ui.row().classes("items-center gap-2 w-full max-w-5xl mx-auto"):
+            ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 1.5rem;")
+            ui.label("Strain").classes("text-lg font-extrabold tracking-tight").style(f"color: {TEXT}")
             ui.space()
-            ui.label(f"Hi, {current_user_name}").classes("text-sm").style(f"color: {MUTED}")
+            with ui.element("div").classes("icon-bubble bubble-sm").style(f"background-color: {ACCENT}26;"):
+                ui.label((current_user_name or "U")[0].upper()) \
+                    .classes("font-bold").style(f"color: {ACCENT};")
             ui.button(icon="logout", on_click=sign_out) \
                 .props("flat dense round").style(f"color: {MUTED}").tooltip("Sign out")
 
@@ -493,18 +552,48 @@ def index(request: Request) -> None:
     exercises: list[dict] = []
     editing_id: dict = {"value": None}
 
-    # ---- Tabs ----
-    with ui.tabs().classes("w-full max-w-5xl mx-auto") as tabs:
-        tab_dash = ui.tab("Dashboard", icon="dashboard")
-        tab_log = ui.tab("Log session", icon="add_circle")
+    # ---- Navigation: top tabs on desktop, bottom bar on phones ----
+    with ui.tabs().classes("top-tabs w-full max-w-5xl mx-auto").props("no-caps") as tabs:
+        tab_dash = ui.tab("Home", icon="home")
+        tab_log = ui.tab("Log", icon="add_circle")
         tab_history = ui.tab("History", icon="history")
+
+    # Bottom bar mirrors the tabs; CSS swaps which one is visible per screen
+    # size. Re-rendered on every tab change so the active item highlights.
+    current_tab = {"value": "Home"}
+
+    @ui.refreshable
+    def bottom_nav() -> None:
+        with ui.element("div").classes("bottom-nav"):
+            for name, icon, text in (
+                ("Home", "home", "Home"),
+                ("Log", "add_circle", "Log"),
+                ("History", "history", "History"),
+            ):
+                active = current_tab["value"] == name
+                color = ACCENT if active else MUTED
+                with ui.column().classes("items-center gap-0 cursor-pointer px-6 py-1") \
+                        .on("click", lambda name=name: tabs.set_value(name)):
+                    ui.icon(icon).style(f"color: {color}; font-size: 1.6rem;")
+                    ui.label(text).classes("text-[10px] font-medium").style(f"color: {color};")
+
+    bottom_nav()
+
+    def _tab_changed(e) -> None:
+        current_tab["value"] = str(e.value)
+        bottom_nav.refresh()
+
+    tabs.on_value_change(_tab_changed)
 
     with ui.tab_panels(tabs, value=tab_dash).classes("w-full max-w-5xl mx-auto").style(f"background-color: {BG}"):
 
-        # ============= DASHBOARD =============
+        # ============= HOME =============
         with ui.tab_panel(tab_dash).classes("p-0"):
-            with ui.column().classes("w-full gap-6 p-6"):
-                ui.label("Dashboard").classes("text-2xl font-bold").style(f"color: {TEXT}")
+            with ui.column().classes("page-content w-full gap-6 p-6"):
+                first_name = (current_user_name or "there").split()[0]
+                with ui.column().classes("gap-0"):
+                    ui.label(f"Hi, {first_name}").classes("text-3xl font-extrabold").style(f"color: {TEXT}")
+                    ui.label(datetime.now().strftime("%A · %b %d")).classes("text-sm").style(f"color: {MUTED}")
 
                 @ui.refreshable
                 def stats_panel() -> None:
@@ -524,17 +613,18 @@ def index(request: Request) -> None:
                     discipline_count = len({s.data.discipline for s in month_sessions})
 
                     def tile(icon, label, value, sub, big=False, pulse=False, color=ACCENT):
-                        with ui.card().classes("stat-tile flex-1").style(
-                            f"background-color: {SURFACE}; min-width: 180px;"
+                        with ui.card().classes("stat-tile flex-1 p-5 gap-1").style(
+                            f"background-color: {SURFACE}; min-width: 150px;"
                         ):
-                            with ui.row().classes("items-center gap-2"):
+                            with ui.element("div").classes("icon-bubble bubble-sm").style(
+                                f"background-color: {color}26;"
+                            ):
                                 ui.icon(icon).style(f"color: {color}; font-size: 1.2rem;")
-                                ui.label(label).style(f"color: {MUTED}").classes("text-xs tracking-widest uppercase")
-                            classes = "font-bold mt-1 " + ("text-5xl " if big else "text-3xl ")
+                            classes = "stat-num font-bold mt-2 " + ("text-5xl " if big else "text-3xl ")
                             if pulse:
                                 classes += "score-pulse"
                             ui.label(str(value)).classes(classes).style(f"color: {color}")
-                            ui.label(sub).style(f"color: {MUTED}").classes("text-xs")
+                            ui.label(f"{label} · {sub}").style(f"color: {MUTED}").classes("text-xs")
 
                     with ui.row().classes("w-full gap-4 flex-wrap"):
                         tile("local_fire_department", "Streak", streak, "day(s) in a row",
@@ -693,41 +783,70 @@ def index(request: Request) -> None:
 
                     recent_snapshot()
 
-        # ============= LOG SESSION =============
+        # ============= LOG WORKOUT =============
         with ui.tab_panel(tab_log).classes("p-0"):
-            with ui.column().classes("w-full gap-4 p-6"):
-                ui.label("Log a session").classes("text-2xl font-bold").style(f"color: {TEXT}")
+            with ui.column().classes("page-content w-full gap-4 p-6"):
+                # Quick-add stepper (Apple-workout-picker style): step 1 is a
+                # grid of discipline tiles; step 2 shows only that
+                # discipline's fields. `picked` drives which step renders.
+                picked: dict = {"value": None}
 
-                with ui.card().classes("w-full").style(f"background-color: {SURFACE}"):
-                    # Date + time + discipline
-                    with ui.row().classes("w-full gap-4"):
-                        ui.input("Date", value=session_state["date"]) \
-                            .props("dark outlined dense type=date") \
-                            .bind_value(session_state, "date")
-                        ui.input("Time", value=session_state["time"]) \
-                            .props("dark outlined dense type=time") \
-                            .bind_value(session_state, "time")
-                        ui.select(
-                            {d: DISCIPLINE_LABELS[d] for d in DISCIPLINES},
-                            value="bjj", label="Discipline",
-                        ).props("dark outlined dense").classes("min-w-40") \
-                            .bind_value(session_state, "discipline") \
-                            .on("update:model-value", lambda: discipline_form.refresh())
+                @ui.refreshable
+                def log_flow():
+                    d = picked["value"]
 
-                    ui.input("Session notes (optional)") \
-                        .props("dark outlined dense").classes("w-full") \
-                        .bind_value(session_state, "notes")
+                    # ---- Step 1: pick a workout ----
+                    if d is None:
+                        with ui.column().classes("gap-0"):
+                            ui.label("Log a workout").classes("text-3xl font-extrabold").style(f"color: {TEXT}")
+                            ui.label("What did you train?").classes("text-sm").style(f"color: {MUTED}")
+                        with ui.element("div").classes("disc-grid w-full"):
+                            for disc in DISCIPLINES:
+                                disc_color = DISCIPLINE_COLORS[disc]
+                                with ui.card().classes("disc-tile cursor-pointer items-center p-5 gap-3").style(
+                                    f"background-color: {SURFACE};"
+                                ) as disc_tile:
+                                    with ui.element("div").classes("icon-bubble bubble-lg").style(
+                                        f"background-color: {disc_color}26;"
+                                    ):
+                                        ui.icon(DISCIPLINE_ICONS[disc]).style(
+                                            f"color: {disc_color}; font-size: 1.9rem;"
+                                        )
+                                    ui.label(DISCIPLINE_LABELS[disc]).classes("font-semibold text-sm") \
+                                        .style(f"color: {TEXT}")
+                                disc_tile.on("click", lambda disc=disc: pick(disc))
+                        return
 
-                    @ui.refreshable
-                    def discipline_form():
-                        d = session_state["discipline"]
-                        color = DISCIPLINE_COLORS.get(d, ACCENT)
-                        # Visual cue: discipline label with its icon + color
-                        with ui.row().classes("items-center gap-2 mt-2"):
+                    # ---- Step 2: only this discipline's fields ----
+                    color = DISCIPLINE_COLORS.get(d, ACCENT)
+                    with ui.row().classes("items-center gap-3 w-full"):
+                        ui.button(icon="arrow_back", on_click=go_back) \
+                            .props("flat round dense").style(f"color: {MUTED}")
+                        with ui.element("div").classes("icon-bubble bubble-sm").style(
+                            f"background-color: {color}26;"
+                        ):
                             ui.icon(DISCIPLINE_ICONS.get(d, "circle")) \
                                 .style(f"color: {color}; font-size: 1.3rem;")
-                            ui.label(DISCIPLINE_LABELS.get(d, d)).classes("text-md font-bold") \
-                                .style(f"color: {color}")
+                        ui.label(DISCIPLINE_LABELS.get(d, d)).classes("text-2xl font-extrabold") \
+                            .style(f"color: {TEXT}")
+
+                    if editing_id["value"]:
+                        with ui.row().classes("items-center gap-2 p-2 rounded") \
+                                .style(f"background-color: {SURFACE_HI};"):
+                            ui.icon("edit").style(f"color: {ACCENT}")
+                            ui.label("Editing — Save to update, Cancel to discard").classes("text-sm") \
+                                .style(f"color: {ACCENT}")
+                            ui.button("Cancel", on_click=lambda: reset_form()) \
+                                .props("flat dense").style(f"color: {MUTED}")
+
+                    with ui.card().classes("w-full gap-4 p-5").style(f"background-color: {SURFACE}"):
+                        with ui.row().classes("w-full gap-4"):
+                            ui.input("Date", value=session_state["date"]) \
+                                .props("dark outlined dense type=date").classes("flex-1") \
+                                .bind_value(session_state, "date")
+                            ui.input("Time", value=session_state["time"]) \
+                                .props("dark outlined dense type=time").classes("flex-1") \
+                                .bind_value(session_state, "time")
 
                         if d in ("bjj", "wrestling"):
                             with ui.row().classes("w-full gap-4"):
@@ -741,7 +860,7 @@ def index(request: Request) -> None:
                             nonlocal_col = ui.column().classes("w-full gap-2")
                             entries.clear()
                             _new_entry_row(nonlocal_col, entries)
-                            discipline_form._entries_col = nonlocal_col
+                            log_flow._entries_col = nonlocal_col
 
                         elif d == "mma":
                             with ui.row().classes("w-full gap-4"):
@@ -760,7 +879,7 @@ def index(request: Request) -> None:
                             nonlocal_col = ui.column().classes("w-full gap-2")
                             entries.clear()
                             _new_entry_row(nonlocal_col, entries)
-                            discipline_form._entries_col = nonlocal_col
+                            log_flow._entries_col = nonlocal_col
 
                         elif d in ("boxing", "kickboxing"):
                             with ui.row().classes("w-full gap-4"):
@@ -776,7 +895,7 @@ def index(request: Request) -> None:
                             nonlocal_col = ui.column().classes("w-full gap-2")
                             entries.clear()
                             _new_entry_row(nonlocal_col, entries)
-                            discipline_form._entries_col = nonlocal_col
+                            log_flow._entries_col = nonlocal_col
 
                         elif d == "cardio":
                             with ui.row().classes("w-full gap-4"):
@@ -802,160 +921,166 @@ def index(request: Request) -> None:
                             ex_col = ui.column().classes("w-full gap-2")
                             exercises.clear()
                             _new_exercise_row(ex_col, exercises)
-                            discipline_form._ex_col = ex_col
+                            log_flow._ex_col = ex_col
 
-                    discipline_form()
+                        ui.input("Notes (optional)") \
+                            .props("dark outlined dense").classes("w-full") \
+                            .bind_value(session_state, "notes")
 
-                    @ui.refreshable
-                    def edit_banner():
-                        if editing_id["value"]:
-                            with ui.row().classes("items-center gap-2 mt-2 p-2 rounded") \
-                                    .style(f"background-color: {SURFACE_HI};"):
-                                ui.icon("edit").style(f"color: {ACCENT}")
-                                ui.label("Editing — Save to update, Cancel to discard").classes("text-sm") \
-                                    .style(f"color: {ACCENT}")
-                                ui.button("Cancel", on_click=lambda: reset_form()) \
-                                    .props("flat dense").style(f"color: {MUTED}")
+                        if d in ("bjj", "wrestling", "mma", "boxing", "kickboxing", "weights"):
+                            ui.button("Add row", on_click=lambda: add_row(), icon="add") \
+                                .props("flat dense no-caps").style(f"color: {ACCENT}")
 
-                    edit_banner()
+                        ui.button("Save workout", on_click=on_save, icon="check") \
+                            .props("size=lg no-caps").classes("w-full mt-2") \
+                            .style(f"background-color: {color}; color: {BG}; font-weight: 700;")
 
-                    with ui.row().classes("gap-2 mt-2"):
-                        def add_row():
-                            d = session_state["discipline"]
-                            if d in ("bjj", "wrestling", "mma", "boxing", "kickboxing") and hasattr(discipline_form, "_entries_col"):
-                                _new_entry_row(discipline_form._entries_col, entries)
-                            elif d == "weights" and hasattr(discipline_form, "_ex_col"):
-                                _new_exercise_row(discipline_form._ex_col, exercises)
-                        ui.button("Add row", on_click=add_row, icon="add").props("flat") \
-                            .style(f"color: {ACCENT}")
+                log_flow()
 
-                        async def on_save() -> None:
-                            ui.notify("Saving…")
-                            d = session_state["discipline"]
-                            if d in ("bjj", "wrestling"):
-                                log_entries = []
-                                for e in entries:
-                                    notes = (e["notes"] or "").strip()
-                                    if not notes:
-                                        continue
-                                    tags = await asyncio.to_thread(extract_tags, notes)
-                                    log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
-                                data = GrapplingData(
-                                    discipline=d,
-                                    drilling_minutes=int(session_state["drilling_minutes"]),
-                                    sparring_rounds=int(session_state["sparring_rounds"]),
-                                    round_length_minutes=int(session_state["round_length_minutes"]),
-                                    log_entries=log_entries,
-                                )
-                            elif d == "mma":
-                                log_entries = []
-                                for e in entries:
-                                    notes = (e["notes"] or "").strip()
-                                    if not notes:
-                                        continue
-                                    tags = await asyncio.to_thread(extract_tags, notes)
-                                    log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
-                                data = MmaData(
-                                    discipline="mma",
-                                    drilling_minutes=int(session_state["drilling_minutes"]),
-                                    sparring_rounds=int(session_state["sparring_rounds"]),
-                                    round_length_minutes=int(session_state["round_length_minutes"]),
-                                    wall_wrestling_minutes=int(session_state["wall_wrestling_minutes"]),
-                                    strikes_to_takedown_minutes=int(session_state["strikes_to_takedown_minutes"]),
-                                    log_entries=log_entries,
-                                )
-                            elif d in ("boxing", "kickboxing"):
-                                log_entries = []
-                                for e in entries:
-                                    notes = (e["notes"] or "").strip()
-                                    if not notes:
-                                        continue
-                                    tags = await asyncio.to_thread(extract_tags, notes)
-                                    log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
-                                data = StrikingData(
-                                    discipline=d,
-                                    bag_minutes=int(session_state["bag_minutes"]),
-                                    pad_minutes=int(session_state["pad_minutes"]),
-                                    sparring_rounds=int(session_state["sparring_rounds"]),
-                                    round_length_minutes=int(session_state["round_length_minutes"]),
-                                    log_entries=log_entries,
-                                )
-                            elif d == "cardio":
-                                data = CardioData(
-                                    discipline="cardio",
-                                    activity_type=session_state["activity_type"],
-                                    duration_minutes=int(session_state["duration_minutes"]),
-                                    distance_km=float(session_state["distance_km"]) if session_state["distance_km"] else None,
-                                    intensity=session_state["intensity"],
-                                    heart_rate_avg=int(session_state["heart_rate_avg"]) if session_state["heart_rate_avg"] else None,
-                                )
-                            elif d == "weights":
-                                ex_objs = [
-                                    Exercise(
-                                        name=e["name"],
-                                        sets=int(e["sets"]),
-                                        reps=int(e["reps"]),
-                                        weight_kg=float(e["weight_kg"]) if e["weight_kg"] else None,
-                                    )
-                                    for e in exercises if e["name"].strip()
-                                ]
-                                data = WeightsData(
-                                    discipline="weights",
-                                    exercises=ex_objs,
-                                    duration_minutes=int(session_state["weights_duration_minutes"]),
-                                )
+                def pick(d: str) -> None:
+                    session_state["discipline"] = d
+                    picked["value"] = d
+                    log_flow.refresh()
 
-                            started = datetime.fromisoformat(f"{session_state['date']}T{session_state['time']}:00")
-                            session = Session(
-                                id=editing_id["value"],
-                                user_id=current_user_id,
-                                started_at=started,
-                                notes=session_state["notes"] or None,
-                                data=data,
+                def go_back() -> None:
+                    picked["value"] = None
+                    log_flow.refresh()
+
+                def add_row() -> None:
+                    d = picked["value"]
+                    if d in ("bjj", "wrestling", "mma", "boxing", "kickboxing") and hasattr(log_flow, "_entries_col"):
+                        _new_entry_row(log_flow._entries_col, entries)
+                    elif d == "weights" and hasattr(log_flow, "_ex_col"):
+                        _new_exercise_row(log_flow._ex_col, exercises)
+
+                async def on_save() -> None:
+                    d = picked["value"]
+                    if not d:
+                        return
+                    ui.notify("Saving…")
+                    if d in ("bjj", "wrestling"):
+                        log_entries = []
+                        for e in entries:
+                            notes = (e["notes"] or "").strip()
+                            if not notes:
+                                continue
+                            tags = await asyncio.to_thread(extract_tags, notes)
+                            log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
+                        data = GrapplingData(
+                            discipline=d,
+                            drilling_minutes=int(session_state["drilling_minutes"]),
+                            sparring_rounds=int(session_state["sparring_rounds"]),
+                            round_length_minutes=int(session_state["round_length_minutes"]),
+                            log_entries=log_entries,
+                        )
+                    elif d == "mma":
+                        log_entries = []
+                        for e in entries:
+                            notes = (e["notes"] or "").strip()
+                            if not notes:
+                                continue
+                            tags = await asyncio.to_thread(extract_tags, notes)
+                            log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
+                        data = MmaData(
+                            discipline="mma",
+                            drilling_minutes=int(session_state["drilling_minutes"]),
+                            sparring_rounds=int(session_state["sparring_rounds"]),
+                            round_length_minutes=int(session_state["round_length_minutes"]),
+                            wall_wrestling_minutes=int(session_state["wall_wrestling_minutes"]),
+                            strikes_to_takedown_minutes=int(session_state["strikes_to_takedown_minutes"]),
+                            log_entries=log_entries,
+                        )
+                    elif d in ("boxing", "kickboxing"):
+                        log_entries = []
+                        for e in entries:
+                            notes = (e["notes"] or "").strip()
+                            if not notes:
+                                continue
+                            tags = await asyncio.to_thread(extract_tags, notes)
+                            log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
+                        data = StrikingData(
+                            discipline=d,
+                            bag_minutes=int(session_state["bag_minutes"]),
+                            pad_minutes=int(session_state["pad_minutes"]),
+                            sparring_rounds=int(session_state["sparring_rounds"]),
+                            round_length_minutes=int(session_state["round_length_minutes"]),
+                            log_entries=log_entries,
+                        )
+                    elif d == "cardio":
+                        data = CardioData(
+                            discipline="cardio",
+                            activity_type=session_state["activity_type"],
+                            duration_minutes=int(session_state["duration_minutes"]),
+                            distance_km=float(session_state["distance_km"]) if session_state["distance_km"] else None,
+                            intensity=session_state["intensity"],
+                            heart_rate_avg=int(session_state["heart_rate_avg"]) if session_state["heart_rate_avg"] else None,
+                        )
+                    elif d == "weights":
+                        ex_objs = [
+                            Exercise(
+                                name=e["name"],
+                                sets=int(e["sets"]),
+                                reps=int(e["reps"]),
+                                weight_kg=float(e["weight_kg"]) if e["weight_kg"] else None,
                             )
-                            try:
-                                saved = save_user_session(current_user_id, session)
-                            except SessionAccessDenied:
-                                ui.notify("Cannot save — session belongs to another user", color="negative")
-                                return
-                            log.info(
-                                "session.save uid=%s id=%s discipline=%s",
-                                current_user_id, saved.id, d,
-                            )
-                            ui.notify("Saved", color="positive")
-                            editing_id["value"] = None
-                            reset_form()
-                            stats_panel.refresh()
-                            charts_row.refresh()
-                            recent_snapshot.refresh()
-                            history_container.refresh()
+                            for e in exercises if e["name"].strip()
+                        ]
+                        data = WeightsData(
+                            discipline="weights",
+                            exercises=ex_objs,
+                            duration_minutes=int(session_state["weights_duration_minutes"]),
+                        )
 
-                        ui.button("Save session", on_click=on_save, icon="check") \
-                            .style(f"background-color: {ACCENT}; color: {BG};")
+                    started = datetime.fromisoformat(f"{session_state['date']}T{session_state['time']}:00")
+                    session = Session(
+                        id=editing_id["value"],
+                        user_id=current_user_id,
+                        started_at=started,
+                        notes=session_state["notes"] or None,
+                        data=data,
+                    )
+                    try:
+                        saved = save_user_session(current_user_id, session)
+                    except SessionAccessDenied:
+                        ui.notify("Cannot save — session belongs to another user", color="negative")
+                        return
+                    log.info(
+                        "session.save uid=%s id=%s discipline=%s",
+                        current_user_id, saved.id, d,
+                    )
+                    ui.notify("Saved", color="positive")
+                    editing_id["value"] = None
+                    reset_form()
+                    stats_panel.refresh()
+                    charts_row.refresh()
+                    recent_snapshot.refresh()
+                    history_container.refresh()
+                    # Land back on Home so the updated stats greet the user.
+                    tabs.set_value("Home")
 
-                    def reset_form():
-                        session_state["date"] = date.today().isoformat()
-                        session_state["time"] = "09:00"
-                        session_state["notes"] = ""
-                        session_state["drilling_minutes"] = 0
-                        session_state["sparring_rounds"] = 0
-                        session_state["round_length_minutes"] = 6
-                        session_state["bag_minutes"] = 0
-                        session_state["pad_minutes"] = 0
-                        session_state["wall_wrestling_minutes"] = 0
-                        session_state["strikes_to_takedown_minutes"] = 0
-                        session_state["duration_minutes"] = 0
-                        session_state["distance_km"] = None
-                        session_state["intensity"] = "moderate"
-                        session_state["heart_rate_avg"] = None
-                        session_state["weights_duration_minutes"] = 0
-                        editing_id["value"] = None
-                        discipline_form.refresh()
-                        edit_banner.refresh()
+                def reset_form():
+                    session_state["date"] = date.today().isoformat()
+                    session_state["time"] = "09:00"
+                    session_state["notes"] = ""
+                    session_state["drilling_minutes"] = 0
+                    session_state["sparring_rounds"] = 0
+                    session_state["round_length_minutes"] = 6
+                    session_state["bag_minutes"] = 0
+                    session_state["pad_minutes"] = 0
+                    session_state["wall_wrestling_minutes"] = 0
+                    session_state["strikes_to_takedown_minutes"] = 0
+                    session_state["duration_minutes"] = 0
+                    session_state["distance_km"] = None
+                    session_state["intensity"] = "moderate"
+                    session_state["heart_rate_avg"] = None
+                    session_state["weights_duration_minutes"] = 0
+                    editing_id["value"] = None
+                    picked["value"] = None
+                    log_flow.refresh()
 
         # ============= HISTORY =============
         with ui.tab_panel(tab_history).classes("p-0"):
-            with ui.column().classes("w-full gap-4 p-6"):
+            with ui.column().classes("page-content w-full gap-4 p-6"):
                 ui.label("History").classes("text-2xl font-bold").style(f"color: {TEXT}")
 
                 def on_delete(session_id: str):
