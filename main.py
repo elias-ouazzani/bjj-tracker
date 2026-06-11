@@ -117,20 +117,12 @@ def _inject_firebase_sdk() -> None:
     /auth/callback -> on success, go to /. No redirect fallback, no
     onAuthStateChanged/getRedirectResult — one path, one way.
 
-    The #auth-status banner shows the result so failures are visible without
-    devtools — Elias debugs on Windows, see [[feedback-debug-without-devtools]].
+    Progress is logged to the browser console and relayed to the server so it
+    lands in Cloud Run logs — no on-screen banner. Elias debugs on Windows with
+    no easy devtools, so the server log is the timeline. See
+    [[feedback-debug-without-devtools]].
     """
     ui.add_head_html(f"""
-    <style>
-      #auth-status {{
-        position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
-        background: #1C1B18; color: #E8A957; padding: 0.5rem 1rem;
-        font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
-        border-bottom: 1px solid #E8A957; white-space: pre-wrap;
-        max-height: 40vh; overflow-y: auto; display: none;
-      }}
-    </style>
-    <div id="auth-status"></div>
     <script type="module">
       import {{ initializeApp }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
       import {{
@@ -142,13 +134,8 @@ def _inject_firebase_sdk() -> None:
 
       const __authT0 = Date.now();
       const __authLoadId = Math.random().toString(36).slice(2, 8);
-      const statusEl = document.getElementById('auth-status');
       function showStatus(msg) {{
         const line = '+' + ((Date.now() - __authT0) / 1000).toFixed(1) + 's  ' + msg;
-        if (statusEl) {{
-          statusEl.style.display = 'block';
-          statusEl.textContent += line + '\\n';
-        }}
         console.log('[auth]', line);
         // Relay every breadcrumb to the server so it lands in Cloud Run logs.
         // Elias debugs on Windows + iPhone with no devtools, so the server log
@@ -171,13 +158,6 @@ def _inject_firebase_sdk() -> None:
         }} catch (e) {{}}
       }}
       window.__authStatus = showStatus;
-      window.addEventListener('error', function (e) {{
-        showStatus('window.onerror: ' + (e && e.message ? e.message : e));
-      }});
-      window.addEventListener('unhandledrejection', function (e) {{
-        var r = e && e.reason;
-        showStatus('unhandledrejection: ' + (r && (r.code || r.message) ? (r.code || r.message) : r));
-      }});
 
       let fbApp, auth;
       try {{
