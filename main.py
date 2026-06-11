@@ -19,6 +19,13 @@ from fastapi.responses import JSONResponse
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from nicegui import app, ui
 
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    stream=sys.stdout,  # stdout so Cloud Run doesn't tag every line ERROR
+)
+log = logging.getLogger("strain.main")
+
 from ai import extract_tags
 from auth import verify_id_token
 from charts import (
@@ -46,21 +53,6 @@ from models import (
 )
 
 load_dotenv()
-
-# --- Logging ----------------------------------------------------------------
-# Same pattern as the auth-practice app: one basicConfig, a named logger,
-# INFO for normal events and WARNING for "the user's token was bad" cases.
-# Streamed to stdout (not the default stderr) so Cloud Run ingests it as
-# normal logs instead of tagging every line as an ERROR. Cloud Run captures
-# stdout automatically — view it in the service's Logs tab or with
-# `gcloud run services logs read strain --region europe-west1`.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    datefmt="%H:%M:%S",
-    stream=sys.stdout,
-)
-logger = logging.getLogger("strain")
 
 AUTH_COOKIE_NAME = "strain_auth"
 AUTH_COOKIE_MAX_AGE = 14 * 24 * 60 * 60
@@ -148,17 +140,57 @@ def _inject_firebase_sdk() -> None:
         signOut
       }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 
+      const __authT0 = Date.now();
+      const __authLoadId = Math.random().toString(36).slice(2, 8);
       const statusEl = document.getElementById('auth-status');
       function showStatus(msg) {{
-        if (!statusEl) return;
-        statusEl.style.display = 'block';
-        statusEl.textContent = msg;
-        console.log('[auth]', msg);
+        const line = '+' + ((Date.now() - __authT0) / 1000).toFixed(1) + 's  ' + msg;
+        if (statusEl) {{
+          statusEl.style.display = 'block';
+          statusEl.textContent += line + '\\n';
+        }}
+        console.log('[auth]', line);
+        // Relay every breadcrumb to the server so it lands in Cloud Run logs.
+        // Elias debugs on Windows + iPhone with no devtools, so the server log
+        // is the only place we can read this timeline. Fire-and-forget — never
+        // let logging break the auth flow. See [[feedback-debug-without-devtools]].
+        try {{
+          fetch('/auth/clientlog', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            credentials: 'same-origin',
+            keepalive: true,
+            body: JSON.stringify({{
+              loadId: __authLoadId,
+              host: window.location.host,
+              path: window.location.pathname,
+              tMs: Date.now() - __authT0,
+              msg: msg
+            }})
+          }}).catch(function () {{}});
+        }} catch (e) {{}}
+      }}
+      window.__authStatus = showStatus;
+      window.addEventListener('error', function (e) {{
+        showStatus('window.onerror: ' + (e && e.message ? e.message : e));
+      }});
+      window.addEventListener('unhandledrejection', function (e) {{
+        var r = e && e.reason;
+        showStatus('unhandledrejection: ' + (r && (r.code || r.message) ? (r.code || r.message) : r));
+      }});
+
+      let fbApp, auth;
+      try {{
+        showStatus('init: host=' + window.location.host);
+        fbApp = initializeApp({FIREBASE_CONFIG_JS});
+        auth = getAuth(fbApp);
+        showStatus('init: ok authDomain=' + (auth.config && auth.config.authDomain));
+      }} catch (e) {{
+        showStatus('init FAILED: ' + e.message);
+        throw e;
       }}
 
-      const fbApp = initializeApp({FIREBASE_CONFIG_JS});
-      const auth = getAuth(fbApp);
-
+      // Popup-only sign-in (like the auth-practice app): one path, one way.
       window.firebaseSignIn = async () => {{
         const provider = new GoogleAuthProvider();
         try {{
@@ -201,24 +233,52 @@ def _inject_firebase_sdk() -> None:
     """)
 
 
+@app.post("/auth/clientlog")
+async def auth_clientlog(request: Request):
+    """Sink for client-side auth breadcrumbs.
+
+    The login JS POSTs every showStatus() line here so the full client
+    timeline lands in the server (Cloud Run) logs — the only place we can
+    read it when debugging on a device with no devtools. Pure observability:
+    it stores nothing and always returns ok so it can never break sign-in.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    log.info(
+        "auth.clientlog load=%s host=%s path=%s t=%sms msg=%r",
+        body.get("loadId"), body.get("host"), body.get("path"),
+        body.get("tMs"), body.get("msg"),
+    )
+    return JSONResponse({"ok": True})
+
+
 @app.post("/auth/callback")
 async def auth_callback(request: Request):
     """Verify the Firebase ID token sent by the browser, then set the signed
     auth cookie that keeps the user logged in."""
+    # Log request origin so we can spot a page-origin vs Firebase-authDomain
+    # mismatch — the prime suspect when popup auth misbehaves on Cloud Run.
+    log.info(
+        "auth/callback: received host=%s origin=%s xfwd_proto=%s",
+        request.url.hostname,
+        request.headers.get("origin"),
+        request.headers.get("x-forwarded-proto"),
+    )
     body = await request.json()
     id_token = body.get("idToken")
     if not id_token:
-        logger.warning("auth/callback: request with no idToken")
+        log.warning("auth/callback: request with no idToken")
         return JSONResponse({"ok": False, "error": "missing idToken"}, status_code=400)
-    logger.info("auth/callback: received token (len=%d), verifying", len(id_token))
     try:
         decoded = verify_id_token(id_token)
     except Exception as exc:
         # Bad/expired token is the USER's problem, not ours -> WARNING.
-        logger.warning("auth/callback: token rejected: %s", exc)
+        log.warning("auth/callback: token rejected: %s", exc)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=401)
-    logger.info("auth/callback: verified uid=%s email=%s",
-                decoded["uid"], decoded.get("email"))
+    log.info("auth/callback: verified uid=%s email=%s",
+             decoded["uid"], decoded.get("email"))
     response = JSONResponse({"ok": True, "uid": decoded["uid"]})
     response.set_cookie(
         AUTH_COOKIE_NAME,
@@ -228,14 +288,14 @@ async def auth_callback(request: Request):
         secure=_cookie_is_secure(request),
         samesite="lax",
     )
-    logger.info("auth/callback: session cookie set for uid=%s", decoded["uid"])
+    log.info("auth/callback: session cookie set for uid=%s", decoded["uid"])
     return response
 
 
 @app.post("/auth/logout")
 async def auth_logout(request: Request):
     """Delete the signed auth cookie, logging the user out."""
-    logger.info("auth/logout: clearing session cookie")
+    log.info("auth/logout: clearing session cookie")
     response = JSONResponse({"ok": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
     return response
@@ -353,10 +413,10 @@ def index(request: Request) -> None:
     # Auth gate — redirect unauthenticated visitors to /login.
     auth_session = _read_auth_cookie(request)
     if not auth_session or not auth_session.get("uid"):
-        logger.info("auth gate: unauthenticated request to / -> /login")
+        log.info("auth gate: unauthenticated request to / -> /login")
         ui.navigate.to("/login")
         return
-    logger.info("auth gate: authenticated uid=%s", auth_session["uid"])
+    log.info("auth gate: authenticated uid=%s", auth_session["uid"])
 
     current_user_id: str = auth_session["uid"]
     current_user_name: str = auth_session.get("name", "user")
@@ -474,6 +534,7 @@ def index(request: Request) -> None:
                     try:
                         month_sessions = list_user_sessions(current_user_id, month_start, end)
                     except Exception:
+                        log.exception("stats_panel.list_sessions uid=%s", current_user_id)
                         ui.label("Could not load stats.").style(f"color: {MUTED}")
                         return
                     week_sessions = [s for s in month_sessions if s.started_at >= week_start]
@@ -516,6 +577,7 @@ def index(request: Request) -> None:
                     try:
                         month_sessions = list_user_sessions(current_user_id, end - timedelta(days=60), end)
                     except Exception:
+                        log.exception("charts_row.list_sessions uid=%s", current_user_id)
                         return
 
                     weekly = weekly_discipline_minutes(month_sessions, n_weeks=8)
@@ -872,10 +934,14 @@ def index(request: Request) -> None:
                                 data=data,
                             )
                             try:
-                                save_user_session(current_user_id, session)
+                                saved = save_user_session(current_user_id, session)
                             except SessionAccessDenied:
                                 ui.notify("Cannot save — session belongs to another user", color="negative")
                                 return
+                            log.info(
+                                "session.save uid=%s id=%s discipline=%s",
+                                current_user_id, saved.id, d,
+                            )
                             ui.notify("Saved", color="positive")
                             editing_id["value"] = None
                             reset_form()
@@ -923,6 +989,7 @@ def index(request: Request) -> None:
                                 dialog.close()
                                 ui.notify("Could not delete session", color="negative")
                                 return
+                            log.info("session.delete uid=%s id=%s", current_user_id, session_id)
                             dialog.close()
                             ui.notify("Deleted", color="warning")
                             stats_panel.refresh()
@@ -1042,6 +1109,7 @@ if __name__ in {"__main__", "__mp_main__"}:
     # storage_secret encrypts the session cookie that backs app.storage.user.
     # In production set STORAGE_SECRET via Cloud Run env var (Secret Manager).
     storage_secret = os.environ.get("STORAGE_SECRET", "dev-only-not-for-production")
+    log.info("strain.startup port=%s log_level=%s", port, logging.getLogger().getEffectiveLevel())
     ui.run(
         host="0.0.0.0", port=port,
         title="Strain — Training and fitness tracker",

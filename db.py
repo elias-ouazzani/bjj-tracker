@@ -11,6 +11,7 @@ for personal-volume datasets.
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime
 from functools import lru_cache
@@ -20,6 +21,8 @@ from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from models import Session
+
+log = logging.getLogger("strain.db")
 
 SESSIONS_COLLECTION = "sessions"
 
@@ -47,8 +50,10 @@ def save_session(session: Session) -> Session:
     if session.id is None:
         doc_ref = _client().collection(SESSIONS_COLLECTION).document()  # auto-gen ID
         session = session.model_copy(update={"id": doc_ref.id})
+        log.debug("db.save_session create id=%s user=%s", session.id, session.user_id)
     else:
         doc_ref = _client().collection(SESSIONS_COLLECTION).document(session.id)
+        log.debug("db.save_session update id=%s user=%s", session.id, session.user_id)
     doc_ref.set(session.model_dump(mode="json"))
     return session
 
@@ -64,6 +69,7 @@ def get_session(session_id: str) -> Session | None:
 def delete_session(session_id: str) -> None:
     """Delete a session by ID. Idempotent — no-op if not found."""
     _client().collection(SESSIONS_COLLECTION).document(session_id).delete()
+    log.debug("db.delete_session id=%s", session_id)
 
 
 def list_sessions(user_id: str, start: datetime, end: datetime) -> list[Session]:

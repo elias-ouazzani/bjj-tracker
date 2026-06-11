@@ -15,7 +15,7 @@ import os
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
 
-logger = logging.getLogger("strain.auth")
+log = logging.getLogger("strain.auth")
 
 
 def _ensure_initialized() -> None:
@@ -28,10 +28,10 @@ def _ensure_initialized() -> None:
         return
     cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if cred_path:
-        logger.info("firebase-admin init: key file at %s", cred_path)
+        log.info("firebase-admin init: key file at %s", cred_path)
         firebase_admin.initialize_app(credentials.Certificate(cred_path))
     else:
-        logger.info("firebase-admin init: Application Default Credentials "
+        log.info("firebase-admin init: Application Default Credentials "
                     "(ambient service account on Cloud Run)")
         firebase_admin.initialize_app()
 
@@ -51,6 +51,9 @@ def verify_id_token(id_token: str) -> dict:
         raise ValueError("No token provided")
     _ensure_initialized()
     try:
-        return firebase_auth.verify_id_token(id_token)
+        decoded = firebase_auth.verify_id_token(id_token)
     except Exception as e:
+        log.warning("verify_id_token failed: %s", e)
         raise ValueError(f"Token verification failed: {e}") from e
+    log.debug("verify_id_token ok uid=%s", decoded.get("uid"))
+    return decoded
