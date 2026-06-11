@@ -28,8 +28,11 @@ def _ensure_initialized() -> None:
         return
     cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if cred_path:
+        log.info("firebase-admin init: key file at %s", cred_path)
         firebase_admin.initialize_app(credentials.Certificate(cred_path))
     else:
+        log.info("firebase-admin init: Application Default Credentials "
+                    "(ambient service account on Cloud Run)")
         firebase_admin.initialize_app()
 
 

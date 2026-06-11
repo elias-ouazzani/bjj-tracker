@@ -1,8 +1,8 @@
 """NiceGUI app for the training-tracker.
 
 Multi-discipline: BJJ, wrestling, MMA, boxing, kickboxing, cardio, weights.
-Dashboard / Log / History tabs. Auth is not wired yet — all sessions
-are written with a stub user_id; Phase C swaps this for Firebase Auth UID.
+Dashboard / Log / History tabs. Auth: Google sign-in via Firebase (popup),
+verified server-side; the user's Firebase uid is the per-session user_id.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
@@ -21,6 +22,7 @@ from nicegui import app, ui
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    stream=sys.stdout,  # stdout so Cloud Run doesn't tag every line ERROR
 )
 log = logging.getLogger("strain.main")
 
@@ -32,7 +34,13 @@ from charts import (
     total_minutes,
     weekly_discipline_minutes,
 )
-from db import delete_session, list_sessions, save_session
+from services.sessions import (
+    SessionAccessDenied,
+    SessionNotFound,
+    delete_user_session,
+    list_user_sessions,
+    save_user_session,
+)
 from models import (
     CardioData,
     Exercise,
@@ -62,11 +70,9 @@ async def _add_coop_header(request, call_next):
 
 # Firebase web SDK config — public, not a secret. Safe to embed.
 # authDomain must match the OAuth client's registered redirect URI, which
-# Firebase auto-pins to <project>.firebaseapp.com. Using a Cloud Run host
-# here causes Google OAuth to reject with redirect_uri_mismatch.
-# Trade-off: cross-origin iframe means Safari ITP blocks signInWithRedirect.
-# We mitigate by trying signInWithPopup first (works on desktop) and only
-# falling back to redirect if the popup is blocked.
+# Firebase auto-pins to <project>.firebaseapp.com.
+# Sign-in is popup-only (like the auth-practice app): works on desktop where
+# popups aren't blocked. The COOP header above lets the popup postMessage back.
 FIREBASE_CONFIG_JS = """{
   apiKey: "AIzaSyDNrJL5vN4TFSzlBmh8gSjxW0jWy3Ir9js",
   authDomain: "atheal-internship-elias.firebaseapp.com",
@@ -105,12 +111,14 @@ def _cookie_is_secure(request: Request) -> bool:
 
 
 def _inject_firebase_sdk() -> None:
-    """Embed Firebase Auth JS SDK.
+    """Embed the Firebase Auth JS SDK and define the popup sign-in flow.
 
-    Pops up Google account picker on desktop (popup), falls back to redirect
-    if popup is blocked (iOS Safari). On-page #auth-status div shows what's
-    happening at every step — Elias debugs on Windows+iPhone with no easy
-    devtools access, see [[feedback-debug-without-devtools]].
+    Same shape as the auth-practice app: popup -> get ID token -> POST it to
+    /auth/callback -> on success, go to /. No redirect fallback, no
+    onAuthStateChanged/getRedirectResult — one path, one way.
+
+    The #auth-status banner shows the result so failures are visible without
+    devtools — Elias debugs on Windows, see [[feedback-debug-without-devtools]].
     """
     ui.add_head_html(f"""
     <style>
@@ -129,9 +137,6 @@ def _inject_firebase_sdk() -> None:
         getAuth,
         GoogleAuthProvider,
         signInWithPopup,
-        signInWithRedirect,
-        getRedirectResult,
-        onAuthStateChanged,
         signOut
       }} from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 
@@ -185,115 +190,45 @@ def _inject_firebase_sdk() -> None:
         throw e;
       }}
 
-      async function postCallback(user) {{
-        let idToken;
+      // Popup-only sign-in (like the auth-practice app): one path, one way.
+      window.firebaseSignIn = async () => {{
+        const provider = new GoogleAuthProvider();
         try {{
-          idToken = await user.getIdToken();
-          showStatus('got idToken (len=' + idToken.length + ')');
-        }} catch (e) {{
-          showStatus('getIdToken FAILED: ' + e.message);
-          return;
-        }}
-        let resp, bodyText;
-        try {{
-          resp = await fetch('/auth/callback', {{
+          // (a) browser opens Google's account picker; Google hands back a token
+          showStatus('1/4 opening Google popup…');
+          const result = await signInWithPopup(auth, provider);
+          showStatus('2/4 signed in as ' + result.user.email + ' — getting token…');
+          const idToken = await result.user.getIdToken();
+
+          // (b) send the token to OUR server to verify + start the session
+          showStatus('3/4 got token (len=' + idToken.length + ') — verifying on server…');
+          const resp = await fetch('/auth/callback', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
             credentials: 'same-origin',
             body: JSON.stringify({{ idToken }})
           }});
-          bodyText = await resp.text();
-          showStatus('/auth/callback ' + resp.status + ': ' + bodyText.slice(0, 200));
-        }} catch (e) {{
-          showStatus('fetch /auth/callback threw: ' + e.message);
-          return;
-        }}
-        let body = null;
-        try {{ body = JSON.parse(bodyText); }} catch (e) {{}}
-        if (resp.ok && body && body.ok && body.session_uid_readback === body.uid) {{
-          if (window.location.pathname === '/') {{
-            showStatus('success, already at /');
-          }} else {{
-            showStatus('success, redirecting to /');
+          const data = await resp.json().catch(() => ({{}}));
+
+          // (c) on success the server has set the auth cookie — load the app
+          if (resp.ok && data.ok) {{
+            showStatus('4/4 verified — loading app…');
             window.location.replace('/');
-          }}
-        }} else {{
-          showStatus('callback rejected — staying on /login');
-        }}
-      }}
-
-      // onAuthStateChanged is the most reliable signal — it fires after
-      // ANY successful sign-in (popup, redirect, restored session) even if
-      // signInWithPopup's promise hangs due to popup postMessage issues.
-      // Only fires postCallback on /login: on the dashboard, the NiceGUI
-      // session cookie is what gates access, not Firebase Auth state.
-      window._authPosted = false;
-      onAuthStateChanged(auth, async (user) => {{
-        showStatus('onAuthStateChanged fired: ' + (user ? ('user=' + user.email) : 'no user'));
-        if (user && !window._authPosted && window.location.pathname === '/login') {{
-          window._authPosted = true;
-          await postCallback(user);
-        }}
-      }});
-
-      // Handle pending redirect result (Safari iOS path).
-      getRedirectResult(auth)
-        .then(async (result) => {{
-          if (result && result.user) {{
-            showStatus('getRedirectResult: got user ' + result.user.email);
-            // onAuthStateChanged will also fire — postCallback is guarded.
           }} else {{
-            showStatus('getRedirectResult: no pending result');
+            showStatus('❌ server rejected (' + resp.status + '): ' + (data.error || 'unknown'));
           }}
-        }})
-        .catch((err) => showStatus('getRedirectResult FAILED: ' + err.code + ' ' + err.message));
-
-      window.firebaseSignIn = async () => {{
-        showStatus('firebaseSignIn called');
-        const provider = new GoogleAuthProvider();
-        // Heartbeat: if the popup promise hangs (auth-event relay blocked by
-        // cross-origin storage partitioning), this is the only signal we are
-        // stuck waiting rather than crashed. Fires every 10s until the popup
-        // resolves/rejects — Firebase's own timeout is ~120s, so a clean run
-        // of heartbeats up to ~+120s then a 'popup FAILED' points straight at
-        // the auth-event relay rather than at our code.
-        let __popupHb = setInterval(function () {{
-          showStatus('still waiting for popup/auth-event result...');
-        }}, 10000);
-        try {{
-          showStatus('trying signInWithPopup');
-          const result = await signInWithPopup(auth, provider);
-          showStatus('popup returned: ' + (result.user ? result.user.email : 'no user'));
         }} catch (e) {{
-          showStatus('popup FAILED: ' + e.code + ' ' + e.message);
-          if (e.code === 'auth/popup-blocked' ||
-              e.code === 'auth/operation-not-supported-in-this-environment' ||
-              e.code === 'auth/cancelled-popup-request' ||
-              e.code === 'auth/popup-closed-by-user') {{
-            showStatus('falling back to redirect');
-            try {{
-              await signInWithRedirect(auth, provider);
-            }} catch (e2) {{
-              showStatus('redirect FAILED: ' + e2.code + ' ' + e2.message);
-            }}
-          }}
-        }} finally {{
-          clearInterval(__popupHb);
+          showStatus('❌ sign-in failed: ' + (e.code || '') + ' ' + e.message);
         }}
       }};
+
       window.firebaseSignOut = async () => {{
-        try {{ await signOut(auth); }} catch (e) {{ showStatus('signOut failed: ' + e.message); }}
+        try {{ await signOut(auth); }} catch (e) {{ showStatus('Sign-out failed: ' + e.message); }}
       }};
 
       window.handleSignInClick = () => {{
-        if (window.firebaseSignIn) {{
-          window.firebaseSignIn();
-        }} else {{
-          showStatus('ERROR: firebaseSignIn not loaded yet — wait a moment and retry');
-        }}
+        if (window.firebaseSignIn) window.firebaseSignIn();
       }};
-
-      showStatus('SDK ready, firebaseSignIn defined');
     </script>
     """)
 
@@ -321,39 +256,30 @@ async def auth_clientlog(request: Request):
 
 @app.post("/auth/callback")
 async def auth_callback(request: Request):
-    """Verify Firebase ID token (sent by JS after Google redirect) and populate session."""
-    # Log the request origin so we can confirm whether the page origin matches
-    # the Firebase authDomain — an origin mismatch is the prime suspect for the
-    # popup auth-event relay hanging (~120s) before this endpoint is ever hit.
+    """Verify the Firebase ID token sent by the browser, then set the signed
+    auth cookie that keeps the user logged in."""
+    # Log request origin so we can spot a page-origin vs Firebase-authDomain
+    # mismatch — the prime suspect when popup auth misbehaves on Cloud Run.
     log.info(
-        "auth.callback step=received host=%s xfwd_host=%s origin=%s referer=%s xfwd_proto=%s",
+        "auth/callback: received host=%s origin=%s xfwd_proto=%s",
         request.url.hostname,
-        request.headers.get("x-forwarded-host"),
         request.headers.get("origin"),
-        request.headers.get("referer"),
         request.headers.get("x-forwarded-proto"),
     )
     body = await request.json()
     id_token = body.get("idToken")
     if not id_token:
-        log.warning("auth.callback step=no_token host=%s", request.url.hostname)
-        return JSONResponse({"ok": False, "step": "no_token", "error": "missing idToken"}, status_code=400)
+        log.warning("auth/callback: request with no idToken")
+        return JSONResponse({"ok": False, "error": "missing idToken"}, status_code=400)
     try:
         decoded = verify_id_token(id_token)
     except Exception as exc:
-        log.warning("auth.callback step=verify error=%s", exc)
-        return JSONResponse({"ok": False, "step": "verify", "error": str(exc)}, status_code=401)
-    try:
-        auth_session = request.session
-        auth_session["uid"] = decoded["uid"]
-        auth_session["email"] = decoded.get("email", "")
-        auth_session["name"] = decoded.get("name", decoded.get("email", "user"))
-        readback = auth_session.get("uid", "MISSING")
-    except Exception as exc:
-        log.exception("auth.callback step=session_write uid=%s", decoded.get("uid"))
-        return JSONResponse({"ok": False, "step": "session_write", "error": str(exc)}, status_code=500)
-    log.info("auth.callback step=success uid=%s email=%s", decoded["uid"], decoded.get("email", ""))
-    response = JSONResponse({"ok": True, "uid": decoded["uid"], "session_uid_readback": readback})
+        # Bad/expired token is the USER's problem, not ours -> WARNING.
+        log.warning("auth/callback: token rejected: %s", exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=401)
+    log.info("auth/callback: verified uid=%s email=%s",
+             decoded["uid"], decoded.get("email"))
+    response = JSONResponse({"ok": True, "uid": decoded["uid"]})
     response.set_cookie(
         AUTH_COOKIE_NAME,
         _make_auth_cookie(decoded),
@@ -362,15 +288,14 @@ async def auth_callback(request: Request):
         secure=_cookie_is_secure(request),
         samesite="lax",
     )
+    log.info("auth/callback: session cookie set for uid=%s", decoded["uid"])
     return response
 
 
 @app.post("/auth/logout")
 async def auth_logout(request: Request):
-    """Clear the encrypted browser session cookie used for auth."""
-    uid = request.session.get("uid")
-    request.session.clear()
-    log.info("auth.logout uid=%s", uid)
+    """Delete the signed auth cookie, logging the user out."""
+    log.info("auth/logout: clearing session cookie")
     response = JSONResponse({"ok": True})
     response.delete_cookie(AUTH_COOKIE_NAME)
     return response
@@ -486,10 +411,12 @@ def login_page() -> None:
 @ui.page("/")
 def index(request: Request) -> None:
     # Auth gate — redirect unauthenticated visitors to /login.
-    auth_session = _read_auth_cookie(request) or request.session
-    if not auth_session.get("uid"):
+    auth_session = _read_auth_cookie(request)
+    if not auth_session or not auth_session.get("uid"):
+        log.info("auth gate: unauthenticated request to / -> /login")
         ui.navigate.to("/login")
         return
+    log.info("auth gate: authenticated uid=%s", auth_session["uid"])
 
     current_user_id: str = auth_session["uid"]
     current_user_name: str = auth_session.get("name", "user")
@@ -605,7 +532,7 @@ def index(request: Request) -> None:
                     week_start = datetime.combine(end.date() - timedelta(days=end.weekday()), datetime.min.time())
                     month_start = end - timedelta(days=30)
                     try:
-                        month_sessions = list_sessions(current_user_id, month_start, end)
+                        month_sessions = list_user_sessions(current_user_id, month_start, end)
                     except Exception:
                         log.exception("stats_panel.list_sessions uid=%s", current_user_id)
                         ui.label("Could not load stats.").style(f"color: {MUTED}")
@@ -648,7 +575,7 @@ def index(request: Request) -> None:
                 def charts_row() -> None:
                     end = datetime.now()
                     try:
-                        month_sessions = list_sessions(current_user_id, end - timedelta(days=60), end)
+                        month_sessions = list_user_sessions(current_user_id, end - timedelta(days=60), end)
                     except Exception:
                         log.exception("charts_row.list_sessions uid=%s", current_user_id)
                         return
@@ -763,7 +690,7 @@ def index(request: Request) -> None:
                     def recent_snapshot() -> None:
                         end = datetime.now()
                         try:
-                            sessions = list_sessions(current_user_id, end - timedelta(days=30), end)
+                            sessions = list_user_sessions(current_user_id, end - timedelta(days=30), end)
                         except Exception as exc:
                             ui.label(f"Could not load: {exc}").style(f"color: {MUTED}")
                             return
@@ -1006,7 +933,11 @@ def index(request: Request) -> None:
                                 notes=session_state["notes"] or None,
                                 data=data,
                             )
-                            saved = save_session(session)
+                            try:
+                                saved = save_user_session(current_user_id, session)
+                            except SessionAccessDenied:
+                                ui.notify("Cannot save — session belongs to another user", color="negative")
+                                return
                             log.info(
                                 "session.save uid=%s id=%s discipline=%s",
                                 current_user_id, saved.id, d,
@@ -1052,7 +983,12 @@ def index(request: Request) -> None:
                         ui.label("Delete this session?").classes("text-lg")
                         ui.label("This cannot be undone.").style(f"color: {MUTED}").classes("text-sm")
                         def confirm():
-                            delete_session(session_id)
+                            try:
+                                delete_user_session(current_user_id, session_id)
+                            except (SessionNotFound, SessionAccessDenied):
+                                dialog.close()
+                                ui.notify("Could not delete session", color="negative")
+                                return
                             log.info("session.delete uid=%s id=%s", current_user_id, session_id)
                             dialog.close()
                             ui.notify("Deleted", color="warning")
@@ -1070,7 +1006,7 @@ def index(request: Request) -> None:
                     end = datetime.now()
                     start = end - timedelta(days=30)
                     try:
-                        sessions = list_sessions(current_user_id, start, end)
+                        sessions = list_user_sessions(current_user_id, start, end)
                     except Exception as exc:
                         ui.label(f"Could not load history: {exc}").style(f"color: {MUTED}")
                         return
