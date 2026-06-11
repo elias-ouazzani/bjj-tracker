@@ -44,9 +44,12 @@ pytest --cov=. --cov-report=term-missing
 - `GOOGLE_APPLICATION_CREDENTIALS` — path to Firebase service account JSON (local only)
 - `FIRESTORE_PROJECT_ID` — Firebase project ID
 
-## Design system
-- Background: #0F0F0D
-- Surface: #1C1B18
-- Accent: #E8A957
-- Text: #FFFFFF / #888880
-- Font: JetBrains Mono
+## Design system (Apple-Fitness-inspired dark)
+- Background: #000000 (pure black canvas)
+- Surface: #1C1C1E / hover #2C2C2E (floating rounded cards, 18px radius)
+- Accent: #E8A957 (highlights only — streak, active nav, primary actions)
+- Text: #FFFFFF / muted #8E8E93
+- Per-discipline colors carry the personality (DISCIPLINE_COLORS in main.py)
+- Font: Inter for UI text; JetBrains Mono only on big stat numbers (.stat-num)
+- Navigation: top tabs ≥768px, fixed bottom tab bar on phones (.top-tabs/.bottom-nav)
+- Log flow: 2-step quick-add stepper (discipline tile grid → per-discipline fields)
