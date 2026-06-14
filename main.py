@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import sys
 from datetime import date, datetime, timedelta
@@ -281,43 +282,59 @@ async def auth_logout(request: Request):
     return response
 
 
-# ---------------- Design tokens ----------------
-# Apple-Fitness-inspired dark theme: pure-black canvas, soft "floating"
-# dark-gray cards, per-discipline colors carrying the personality, amber
-# reserved for highlights (streak, active nav, primary actions).
+# ============================================================
+# Design system — "Strain" (Whoop-inspired, via Claude Design handoff).
+# Dark, serious, performance-device feel. The big number IS the design;
+# color communicates meaning only, never decoration. Cards are shade-only
+# (no border, no shadow); separation is by background shade. Signature
+# element is the ScoreRing gauge. Typeface: Hanken Grotesk (single grotesk,
+# heavy weights carry the stat numbers, tabular figures on).
+# Tokens mirror the handoff's tokens/*.css.
+# ============================================================
 
-BG = "#000000"
-SURFACE = "#1C1C1E"     # card gray (Apple systemGray6 dark)
-SURFACE_HI = "#2C2C2E"  # hover / elevated
-ACCENT = "#E8A957"
-TEXT = "#FFFFFF"
-MUTED = "#8E8E93"       # Apple secondary-label gray
+# --- Base surfaces (shade-only elevation, no borders) ---
+BG = "#0D0D0D"          # near-black, slightly warm — app background
+SURFACE = "#1A1A1A"     # dark charcoal — cards, minimal contrast from bg
+ELEVATED = "#242424"    # active / selected / hovered surfaces
+TRACK = "#2A2A2A"       # gauge background track, inactive bars
+HAIRLINE = "#2E2E2E"    # rare, near-invisible divider
 
-# Clean sans for UI text; JetBrains Mono kept as brand flavor on big numbers.
-FONT_FAMILY = "'Inter', -apple-system, 'Segoe UI', sans-serif"
+# --- Text ---
+TEXT = "#F5F5F5"        # off-white, never pure white
+TEXT2 = "#A8A8A8"       # secondary readable text
+MUTED = "#6B6B6B"       # labels, captions, de-emphasized
+FAINT = "#4A4A4A"       # disabled, ghosted
 
+# --- Semantic / meaning colors ---
+RECOVERY = "#00C853"
+STRAIN_START = "#FF4500"
+STRAIN_END = "#FF6B00"
+STRAIN = "#FF5A1F"      # strain solid midpoint — the primary accent
+SLEEP = "#1E88E5"
+WARNING = "#FFD600"
+DANGER = "#FF3B30"
 
-def _apply_theme() -> None:
-    """Shared page theming: web fonts, primary color, body baseline."""
-    ui.add_head_html(
-        '<link rel="preconnect" href="https://fonts.googleapis.com">'
-        '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800'
-        '&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">'
-    )
-    ui.colors(primary=ACCENT)
-    ui.query("body").style(
-        f"background-color: {BG}; color: {TEXT}; font-family: {FONT_FAMILY};"
-    )
+ACCENT = STRAIN         # primary accent is the strain orange
 
-# Per-discipline visual identity
+# Single grotesk for everything; heavy weights carry the stat numbers.
+FONT_FAMILY = "'Hanken Grotesk', -apple-system, 'Segoe UI', Roboto, sans-serif"
+
+# Weekly training-load goal (minutes) — drives the dashboard ScoreRing gauge.
+WEEKLY_GOAL_MIN = 300
+
+# Per-discipline visual identity. The handoff groups everything into four
+# semantic accents (striking / grappling / conditioning / strength); the app
+# has seven disciplines it must keep DISTINGUISHABLE in the charts, so each
+# gets its own hue pulled toward the handoff palette's temperature. Blues =
+# grappling, warm = striking, green = conditioning, yellow = strength.
 DISCIPLINE_COLORS: dict[str, str] = {
-    "bjj":        "#E8A957",  # warm orange (gi)
-    "wrestling":  "#A77BCA",  # purple
-    "mma":        "#E84B3C",  # red
-    "boxing":     "#F26F4C",  # orange-red
-    "kickboxing": "#E91E63",  # pink
-    "cardio":     "#5BC68B",  # green
-    "weights":    "#5BA0F2",  # blue
+    "bjj":        "#1E88E5",  # grappling blue
+    "wrestling":  "#42A5F5",  # grappling, lighter blue
+    "mma":        "#FF5A1F",  # striking orange (the strain accent)
+    "boxing":     "#FF8A3D",  # striking, amber-orange
+    "kickboxing": "#E64980",  # striking, controlled magenta (chart legibility)
+    "cardio":     "#00C853",  # conditioning green
+    "weights":    "#FFD600",  # strength yellow
 }
 
 DISCIPLINE_ICONS: dict[str, str] = {
@@ -342,6 +359,254 @@ DISCIPLINE_LABELS: dict[str, str] = {
 
 DISCIPLINES = list(DISCIPLINE_COLORS.keys())
 INTENSITIES = ["low", "moderate", "high"]
+
+# The gauge-arc brand mark from the handoff (assets/logo-mark.svg), inlined so
+# we never depend on a static-file route. Used in the header and on login.
+LOGO_MARK_SVG = """
+<svg width="{size}" height="{size}" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="strainMark{uid}" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FF4500"></stop>
+      <stop offset="100%" stop-color="#FF6B00"></stop>
+    </linearGradient>
+  </defs>
+  <g transform="translate(32,32)">
+    <circle r="24" fill="none" stroke="#2A2A2A" stroke-width="8" stroke-dasharray="113 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
+    <circle r="24" fill="none" stroke="url(#strainMark{uid})" stroke-width="8" stroke-dasharray="88 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
+  </g>
+</svg>
+"""
+
+
+def _logo_mark(size: int = 30, uid: str = "h") -> None:
+    ui.html(LOGO_MARK_SVG.format(size=size, uid=uid))
+
+
+def _score_ring_html(
+    value, max_value, *, size: int = 180, label: str | None = None,
+    unit: str | None = None, sublabel: str | None = None,
+    stops=(STRAIN_START, STRAIN_END), gid: str = "ring",
+    value_color: str = TEXT,
+) -> str:
+    """Render the signature Strain gauge as an inline SVG string.
+
+    A 270° arc (90° gap centered at the bottom) over a dark track, gradient
+    fill encoding the value, with the big number sitting in the center. Ported
+    faithfully from the handoff's ScoreRing.jsx. Returned as HTML so it can be
+    dropped in via ui.html().
+    """
+    stroke = round(size * 0.085)
+    r = (size - stroke) / 2
+    cx = cy = size / 2
+    circ = 2 * math.pi * r
+    gap = 90
+    arc_len = circ * (360 - gap) / 360
+    pct = max(0.0, min(1.0, (value / max_value) if max_value else 0.0))
+    filled = arc_len * pct
+    rotation = 90 + gap / 2  # gap centered at the bottom
+
+    n = len(stops)
+    stops_svg = "".join(
+        f'<stop offset="{(i / (n - 1) * 100) if n > 1 else 0:.0f}%" stop-color="{c}"/>'
+        for i, c in enumerate(stops)
+    )
+    unit_html = (
+        f'<span style="font-size:{size * 0.13:.0f}px;font-weight:700;margin-left:1px">{unit}</span>'
+        if unit else ""
+    )
+    label_html = (
+        f'<div style="font-size:{max(10, size * 0.055):.0f}px;font-weight:600;'
+        f'letter-spacing:0.12em;text-transform:uppercase;color:{MUTED}">{label}</div>'
+        if label else ""
+    )
+    sub_html = (
+        f'<div style="font-size:{max(11, size * 0.06):.0f}px;color:{TEXT2};margin-top:2px">{sublabel}</div>'
+        if sublabel else ""
+    )
+    return f"""
+    <div style="position:relative;width:{size}px;height:{size}px;display:inline-block">
+      <svg width="{size}" height="{size}" style="display:block;transform:rotate({rotation:.0f}deg)">
+        <defs>
+          <linearGradient id="{gid}" x1="0%" y1="0%" x2="100%" y2="100%">{stops_svg}</linearGradient>
+        </defs>
+        <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{TRACK}"
+          stroke-width="{stroke}" stroke-linecap="round"
+          stroke-dasharray="{arc_len:.2f} {circ:.2f}"/>
+        <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="url(#{gid})"
+          stroke-width="{stroke}" stroke-linecap="round"
+          stroke-dasharray="{filled:.2f} {circ:.2f}"/>
+      </svg>
+      <div style="position:absolute;inset:0;display:flex;flex-direction:column;
+        align-items:center;justify-content:center;text-align:center;gap:2px;padding:{stroke}px">
+        <div style="font-family:{FONT_FAMILY};font-weight:800;font-size:{size * 0.3:.0f}px;
+          line-height:1;letter-spacing:-0.02em;color:{value_color};font-variant-numeric:tabular-nums">
+          {value}{unit_html}
+        </div>
+        {label_html}{sub_html}
+      </div>
+    </div>
+    """
+
+
+def _apply_theme() -> None:
+    """Shared theming: Hanken Grotesk, design tokens, base utility classes,
+    and the Quasar overrides that make NiceGUI's cards/inputs/buttons match
+    the Strain handoff (shade-only surfaces, no shadows, tight radii)."""
+    ui.add_head_html(
+        '<link rel="preconnect" href="https://fonts.googleapis.com">'
+        '<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">'
+    )
+    ui.colors(primary=ACCENT, dark=BG)
+    ui.query("body").style(
+        f"background-color: {BG}; color: {TEXT}; font-family: {FONT_FAMILY};"
+    )
+    ui.add_head_html(f"""
+    <style>
+      :root {{
+        --bg: {BG}; --surface: {SURFACE}; --elevated: {ELEVATED};
+        --track: {TRACK}; --hairline: {HAIRLINE};
+        --text-primary: {TEXT}; --text-secondary: {TEXT2};
+        --text-muted: {MUTED}; --text-faint: {FAINT};
+        --strain: {STRAIN}; --recovery: {RECOVERY}; --accent: {ACCENT};
+      }}
+      html, body {{
+        background: {BG}; color: {TEXT};
+        font-family: {FONT_FAMILY};
+        font-feature-settings: 'tnum' 1;   /* tabular figures for stats */
+        -webkit-font-smoothing: antialiased;
+      }}
+      ::selection {{ background: rgba(255,90,31,0.30); color: {TEXT}; }}
+
+      /* --- Type primitives (mirror the handoff base.css) --- */
+      .s-label {{
+        font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+        text-transform: uppercase; color: {MUTED}; line-height: 1.3;
+      }}
+      .s-stat {{
+        font-weight: 800; letter-spacing: -0.02em; line-height: 1.0;
+        color: {TEXT}; font-variant-numeric: tabular-nums;
+      }}
+      .s-section {{ font-size: 15px; font-weight: 600; color: {TEXT}; letter-spacing: -0.01em; }}
+
+      /* --- Cards: shade-only, no border, no shadow, 12px radius --- */
+      .q-card {{
+        background: {SURFACE} !important; border-radius: 12px !important;
+        box-shadow: none !important; border: none !important; color: {TEXT};
+      }}
+      .nicegui-card {{ box-shadow: none !important; gap: 0; }}
+
+      /* --- Buttons: no shouty caps, tight radius, confident press --- */
+      .q-btn {{ text-transform: none; border-radius: 10px; }}
+      .q-btn:not(.q-btn--round) {{ font-weight: 600; letter-spacing: 0.01em; }}
+      .q-btn .q-btn__content {{ text-transform: none; }}
+
+      /* --- Inputs: embedded on the near-black bg, hairline edge, 10px --- */
+      .q-field--outlined .q-field__control {{
+        border-radius: 10px; background: {BG};
+      }}
+      .q-field--outlined .q-field__control:before {{ border-color: {HAIRLINE}; }}
+      .q-field--outlined .q-field__control:hover:before {{ border-color: {MUTED}; }}
+      .q-field__native, .q-field__input {{ color: {TEXT}; }}
+
+      /* --- Streak pulse (the one bit of motion that celebrates) --- */
+      @keyframes scoreflash {{
+        0%   {{ transform: scale(1); }}
+        30%  {{ transform: scale(1.12); filter: brightness(1.3); }}
+        100% {{ transform: scale(1); }}
+      }}
+      .score-pulse {{ animation: scoreflash 0.7s ease-out; transform-origin: center; }}
+
+      /* --- Header: frosted near-black --- */
+      .app-header {{
+        background: rgba(13,13,13,0.82); backdrop-filter: blur(16px);
+        border-bottom: 1px solid {HAIRLINE};
+      }}
+
+      /* --- Tabs (top, desktop): muted -> bright on active, no color --- */
+      .q-tab {{ color: {MUTED} !important; text-transform: none; }}
+      .q-tab--active {{ color: {TEXT} !important; }}
+      .q-tab__indicator {{ background: {ACCENT} !important; }}
+
+      /* --- Table-style rows: barely-perceptible hover lift --- */
+      .s-row {{ border-radius: 10px; transition: background 0.18s ease; }}
+      .s-row:hover {{ background: {ELEVATED} !important; }}
+
+      .empty-state {{ text-align: center; padding: 3rem 1rem; color: {MUTED}; }}
+
+      /* --- Icon tiles (elevated rounded square, discipline-colored glyph) --- */
+      .icon-tile {{ border-radius: 10px; background: {ELEVATED};
+        display: flex; align-items: center; justify-content: center; }}
+      .avatar-pill {{ border-radius: 999px; display: flex; align-items: center; justify-content: center; }}
+
+      /* --- KPI strip: 2-up phones, 4-up desktop --- */
+      .kpi-grid {{ display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0,1fr)); }}
+      @media (min-width: 768px) {{ .kpi-grid {{ grid-template-columns: repeat(4, minmax(0,1fr)); }} }}
+
+      /* --- Hero row: stack on phones, 1.4fr/1fr on desktop --- */
+      .hero-grid {{ display: grid; gap: 16px; grid-template-columns: 1fr; }}
+      @media (min-width: 900px) {{ .hero-grid {{ grid-template-columns: 1.4fr 1fr; }} }}
+
+      /* --- Discipline picker grid --- */
+      .disc-grid {{ display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0,1fr)); }}
+      @media (min-width: 640px) {{ .disc-grid {{ grid-template-columns: repeat(3, minmax(0,1fr)); }} }}
+      @media (min-width: 1024px) {{ .disc-grid {{ grid-template-columns: repeat(4, minmax(0,1fr)); }} }}
+      .disc-tile {{ transition: background 0.14s ease, outline-color 0.14s ease;
+        outline: 1.5px solid transparent; cursor: pointer; }}
+      .disc-tile:hover {{ background: {ELEVATED} !important; outline-color: var(--disc, transparent); }}
+      .disc-tile:active {{ transform: scale(0.98); }}
+
+      /* --- Bottom tab bar: thumb nav on phones, hidden on desktop --- */
+      .bottom-nav {{
+        position: fixed; bottom: 0; left: 0; right: 0; z-index: 1000;
+        display: flex; justify-content: space-around; align-items: stretch;
+        background: {SURFACE}; border-top: 1px solid {HAIRLINE};
+        padding: 8px 6px calc(10px + env(safe-area-inset-bottom));
+      }}
+      @media (max-width: 767px) {{
+        .top-tabs {{ display: none !important; }}
+        .page-content {{ padding-bottom: 92px; }}
+      }}
+      @media (min-width: 768px) {{ .bottom-nav {{ display: none !important; }} }}
+    </style>
+    """)
+
+
+# ---------------- Small UI helpers ----------------
+
+def _disc_icon_tile(disc: str, *, tile: int = 38, glyph: float = 1.2) -> None:
+    """The elevated rounded square with a discipline-colored Lucide-ish glyph."""
+    color = DISCIPLINE_COLORS.get(disc, ACCENT)
+    with ui.element("div").classes("icon-tile").style(f"width:{tile}px;height:{tile}px;"):
+        ui.icon(DISCIPLINE_ICONS.get(disc, "circle")).style(
+            f"color: {color}; font-size: {glyph}rem;"
+        )
+
+
+def _kpi_card(label: str, value, *, unit: str = "", color: str = TEXT, pulse: bool = False) -> None:
+    """A KPI cell: tiny uppercase label above one big heavy number."""
+    with ui.card().classes("p-4 gap-1").style(f"background-color: {SURFACE}; min-width: 0;"):
+        ui.label(label).classes("s-label")
+        with ui.row().classes("items-baseline gap-1 mt-1").style("flex-wrap: nowrap;"):
+            num = ui.label(str(value)).classes("s-stat text-4xl").style(f"color: {color};")
+            if pulse:
+                num.classes("score-pulse")
+            if unit:
+                ui.label(unit).style(f"color: {TEXT2}; font-size: 0.95rem; font-weight: 700;")
+
+
+def _metric_row(icon: str, label: str, value, *, unit: str = "", accent: str = TEXT, divider: bool = True) -> None:
+    """Secondary stat row beneath the dominant number — never competes with it."""
+    border = f"border-top: 1px solid {HAIRLINE};" if divider else ""
+    with ui.row().classes("items-center gap-3 w-full").style(f"padding: 10px 0; {border}"):
+        with ui.element("div").classes("icon-tile").style("width:28px;height:28px;"):
+            ui.icon(icon).style(f"color: {accent}; font-size: 0.95rem;")
+        ui.label(label).classes("s-label flex-grow")
+        with ui.row().classes("items-baseline gap-1"):
+            ui.label(str(value)).classes("s-stat").style(
+                f"color: {accent}; font-size: 1.1rem; font-weight: 700;"
+            )
+            if unit:
+                ui.label(unit).style(f"color: {MUTED}; font-size: 0.75rem; font-weight: 600;")
 
 
 # ---------------- Form row helpers ----------------
@@ -386,30 +651,25 @@ def login_page() -> None:
     server-side, store uid in session, redirect to /."""
     _inject_firebase_sdk()
     _apply_theme()
-    ui.add_css(f"""
-        .login-bubble {{
-            width: 96px; height: 96px; border-radius: 9999px;
-            display: flex; align-items: center; justify-content: center;
-            background-color: {ACCENT}26;
-        }}
-    """)
 
-    with ui.column().classes("items-center justify-center w-full min-h-screen gap-4 p-6"):
-        with ui.element("div").classes("login-bubble"):
-            ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 3rem;")
-        ui.label("Strain").classes("text-5xl font-extrabold tracking-tight").style(f"color: {TEXT}")
-        ui.label("Training and fitness tracker").style(f"color: {MUTED}")
+    with ui.column().classes("items-center justify-center w-full min-h-screen gap-5 p-6"):
+        _logo_mark(72, uid="login")
+        with ui.column().classes("items-center gap-1"):
+            ui.label("STRAIN").classes("s-stat text-5xl") \
+                .style(f"color: {TEXT}; letter-spacing: 0.04em;")
+            ui.label("Training & fitness performance tracker").classes("s-label") \
+                .style("letter-spacing: 0.16em;")
         # Pure client-side click handler via NiceGUI's js_handler. We CAN'T
         # use ui.button(on_click=...) here because Firebase Hosting breaks
         # the NiceGUI WebSocket; server-side click handlers silently no-op
         # on iPhone when the app is reached via firebaseapp.com.
         ui.button("Sign in with Google", icon="login") \
-            .props('size=lg no-caps') \
-            .style(f"background-color: {ACCENT}; color: {BG}; margin-top: 1rem; "
-                   f"border-radius: 14px; padding: 0.6rem 1.6rem; font-weight: 600;") \
+            .props('size=lg no-caps unelevated') \
+            .style(f"background-color: {ACCENT}; color: #FFFFFF; margin-top: 0.75rem; "
+                   f"border-radius: 10px; padding: 0.7rem 1.8rem; font-weight: 600;") \
             .on('click', js_handler='() => window.handleSignInClick && window.handleSignInClick()')
-        ui.label("Each user's sessions stay private to them.") \
-            .classes("text-xs mt-4").style(f"color: {MUTED}")
+        ui.label("Each athlete's sessions stay private to them.") \
+            .classes("text-xs mt-3").style(f"color: {MUTED}")
 
 
 @ui.page("/")
@@ -427,83 +687,6 @@ def index(request: Request) -> None:
 
     _inject_firebase_sdk()
     _apply_theme()
-    ui.add_css(f"""
-        @keyframes scoreflash {{
-            0%   {{ transform: scale(1); }}
-            30%  {{ transform: scale(1.15); filter: brightness(1.4); }}
-            100% {{ transform: scale(1); }}
-        }}
-        .score-pulse {{ animation: scoreflash 0.7s ease-out; transform-origin: center; }}
-
-        /* Soft "floating" cards + friendly rounded controls everywhere. */
-        .q-card {{ border-radius: 18px; box-shadow: 0 2px 12px rgba(0,0,0,0.35); }}
-        .q-btn {{ text-transform: none; }}
-        .q-btn:not(.q-btn--round) {{ border-radius: 12px; }}
-        .q-field--outlined .q-field__control {{ border-radius: 12px; }}
-
-        .session-card {{
-            transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
-        }}
-        .session-card:hover {{
-            transform: translateY(-2px);
-            background-color: {SURFACE_HI} !important;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-        }}
-        .stat-tile {{
-            transition: transform 0.15s ease;
-        }}
-        .stat-tile:hover {{
-            transform: translateY(-2px);
-        }}
-        .app-header {{
-            background-color: rgba(0,0,0,0.8);
-            backdrop-filter: blur(16px);
-            border-bottom: 1px solid {SURFACE};
-        }}
-        .q-tab {{
-            color: {MUTED} !important;
-        }}
-        .q-tab--active {{
-            color: {ACCENT} !important;
-        }}
-        .empty-state {{
-            text-align: center;
-            padding: 3rem 1rem;
-            color: {MUTED};
-        }}
-
-        /* Colored icon bubbles (Apple Fitness style). */
-        .icon-bubble {{ border-radius: 9999px; display: flex; align-items: center; justify-content: center; }}
-        .bubble-lg {{ width: 60px; height: 60px; }}
-        .bubble-sm {{ width: 38px; height: 38px; }}
-
-        /* Big stat numbers keep the mono brand flavor. */
-        .stat-num {{ font-family: 'JetBrains Mono', monospace; letter-spacing: -0.02em; }}
-
-        /* Workout-picker tile grid: 2-up on phones, more on bigger screens. */
-        .disc-grid {{ display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-        @media (min-width: 640px) {{ .disc-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }} }}
-        @media (min-width: 1024px) {{ .disc-grid {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }} }}
-        .disc-tile {{ transition: transform 0.12s ease, background-color 0.12s ease; }}
-        .disc-tile:hover {{ transform: translateY(-3px); background-color: {SURFACE_HI} !important; }}
-        .disc-tile:active {{ transform: scale(0.97); }}
-
-        /* Bottom tab bar: thumb-reachable nav on phones, hidden on desktop. */
-        .bottom-nav {{
-            position: fixed; bottom: 0; left: 0; right: 0; z-index: 1000;
-            display: flex; justify-content: space-around; align-items: center;
-            background: rgba(18,18,20,0.92); backdrop-filter: blur(16px);
-            border-top: 1px solid {SURFACE};
-            padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
-        }}
-        @media (max-width: 767px) {{
-            .top-tabs {{ display: none !important; }}
-            .page-content {{ padding-bottom: 96px; }}
-        }}
-        @media (min-width: 768px) {{
-            .bottom-nav {{ display: none !important; }}
-        }}
-    """)
 
     async def sign_out() -> None:
         try:
@@ -518,12 +701,15 @@ def index(request: Request) -> None:
     # ---- Header ----
     with ui.header().classes("app-header items-center px-4 py-2").props("elevated=false"):
         with ui.row().classes("items-center gap-2 w-full max-w-5xl mx-auto"):
-            ui.icon("sports_martial_arts").style(f"color: {ACCENT}; font-size: 1.5rem;")
-            ui.label("Strain").classes("text-lg font-extrabold tracking-tight").style(f"color: {TEXT}")
+            _logo_mark(26, uid="hdr")
+            ui.label("STRAIN").classes("text-lg s-stat") \
+                .style(f"color: {TEXT}; letter-spacing: 0.04em;")
             ui.space()
-            with ui.element("div").classes("icon-bubble bubble-sm").style(f"background-color: {ACCENT}26;"):
+            with ui.element("div").classes("avatar-pill").style(
+                f"width:34px;height:34px;background-color:{ELEVATED};"
+            ):
                 ui.label((current_user_name or "U")[0].upper()) \
-                    .classes("font-bold").style(f"color: {ACCENT};")
+                    .style(f"color: {TEXT}; font-weight: 700;")
             ui.button(icon="logout", on_click=sign_out) \
                 .props("flat dense round").style(f"color: {MUTED}").tooltip("Sign out")
 
@@ -571,11 +757,12 @@ def index(request: Request) -> None:
                 ("History", "history", "History"),
             ):
                 active = current_tab["value"] == name
-                color = ACCENT if active else MUTED
-                with ui.column().classes("items-center gap-0 cursor-pointer px-6 py-1") \
+                color = TEXT if active else FAINT
+                with ui.column().classes("items-center gap-1 cursor-pointer flex-grow py-1") \
                         .on("click", lambda name=name: tabs.set_value(name)):
-                    ui.icon(icon).style(f"color: {color}; font-size: 1.6rem;")
-                    ui.label(text).classes("text-[10px] font-medium").style(f"color: {color};")
+                    ui.icon(icon).style(f"color: {color}; font-size: 1.5rem;")
+                    ui.label(text).classes("text-[10px] font-semibold") \
+                        .style(f"color: {color}; letter-spacing: 0.06em; text-transform: uppercase;")
 
     bottom_nav()
 
@@ -589,12 +776,15 @@ def index(request: Request) -> None:
 
         # ============= HOME =============
         with ui.tab_panel(tab_dash).classes("p-0"):
-            with ui.column().classes("page-content w-full gap-6 p-6"):
+            with ui.column().classes("page-content w-full gap-5 p-6"):
                 first_name = (current_user_name or "there").split()[0]
-                with ui.column().classes("gap-0"):
-                    ui.label(f"Hi, {first_name}").classes("text-3xl font-extrabold").style(f"color: {TEXT}")
-                    ui.label(datetime.now().strftime("%A · %b %d")).classes("text-sm").style(f"color: {MUTED}")
+                hour = datetime.now().hour
+                greeting = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
+                with ui.column().classes("gap-1"):
+                    ui.label(datetime.now().strftime("%A · %b %d").upper()).classes("s-label")
+                    ui.label(f"{greeting}, {first_name}").classes("s-stat text-3xl").style(f"color: {TEXT}")
 
+                # ---- KPI strip (4-up): quick-scan numbers ----
                 @ui.refreshable
                 def stats_panel() -> None:
                     end = datetime.now()
@@ -611,105 +801,42 @@ def index(request: Request) -> None:
                     streak = current_streak(month_sessions)
                     total_min = sum(total_minutes(s.data) for s in month_sessions)
                     discipline_count = len({s.data.discipline for s in month_sessions})
+                    sessions_30d = len(month_sessions)
+                    avg_per = round(total_min / sessions_30d) if sessions_30d else 0
 
-                    def tile(icon, label, value, sub, big=False, pulse=False, color=ACCENT):
-                        with ui.card().classes("stat-tile flex-1 p-5 gap-1").style(
-                            f"background-color: {SURFACE}; min-width: 150px;"
-                        ):
-                            with ui.element("div").classes("icon-bubble bubble-sm").style(
-                                f"background-color: {color}26;"
-                            ):
-                                ui.icon(icon).style(f"color: {color}; font-size: 1.2rem;")
-                            classes = "stat-num font-bold mt-2 " + ("text-5xl " if big else "text-3xl ")
-                            if pulse:
-                                classes += "score-pulse"
-                            ui.label(str(value)).classes(classes).style(f"color: {color}")
-                            ui.label(f"{label} · {sub}").style(f"color: {MUTED}").classes("text-xs")
+                    with ui.element("div").classes("kpi-grid w-full"):
+                        _kpi_card("This week", week_mat_min, unit="min", color=STRAIN)
+                        _kpi_card("Streak", streak, unit="days", color=STRAIN, pulse=True)
+                        _kpi_card("Sessions", sessions_30d, color=TEXT)
+                        _kpi_card("Total · 30d", total_min, unit="min", color=TEXT)
 
-                    with ui.row().classes("w-full gap-4 flex-wrap"):
-                        tile("local_fire_department", "Streak", streak, "day(s) in a row",
-                             big=True, pulse=True, color=ACCENT)
-                        tile("schedule", "This week", week_mat_min, "training minutes",
-                             color=ACCENT)
-                        tile("event", "Sessions", len(month_sessions), "last 30 days",
-                             color=TEXT)
-                        tile("timer", "Total minutes", total_min, "last 30 days",
-                             color=TEXT)
-                        tile("category", "Disciplines", discipline_count, "last 30 days",
-                             color=TEXT)
+                    # ---- Hero row: weekly-load ScoreRing + discipline donut ----
+                    with ui.element("div").classes("hero-grid w-full"):
+                        # Weekly training-load gauge (the signature element).
+                        with ui.card().classes("p-5").style(f"background-color: {SURFACE}"):
+                            ui.label("Weekly load").classes("s-section").style("margin-bottom: 14px;")
+                            with ui.row().classes("items-center gap-6 w-full no-wrap"):
+                                pct = round(min(1.0, week_mat_min / WEEKLY_GOAL_MIN) * 100)
+                                sub = "Goal reached" if week_mat_min >= WEEKLY_GOAL_MIN else f"{pct}% of weekly goal"
+                                ui.html(_score_ring_html(
+                                    week_mat_min, WEEKLY_GOAL_MIN, size=172,
+                                    label="min this week", sublabel=sub,
+                                    stops=(STRAIN_START, STRAIN_END), gid="weekring",
+                                    value_color=TEXT,
+                                ))
+                                with ui.column().classes("flex-grow gap-0"):
+                                    _metric_row("local_fire_department", "Streak", streak,
+                                                unit="days", accent=STRAIN, divider=False)
+                                    _metric_row("event", "This week", len(week_sessions), unit="sessions")
+                                    _metric_row("category", "Disciplines · 30d", discipline_count)
+                                    _metric_row("timer", "Avg / session", avg_per, unit="min")
 
-                stats_panel()
-
-                # ---- Charts (weekly stacked bar + discipline donut) ----
-                @ui.refreshable
-                def charts_row() -> None:
-                    end = datetime.now()
-                    try:
-                        month_sessions = list_user_sessions(current_user_id, end - timedelta(days=60), end)
-                    except Exception:
-                        log.exception("charts_row.list_sessions uid=%s", current_user_id)
-                        return
-
-                    weekly = weekly_discipline_minutes(month_sessions, n_weeks=8)
-                    totals = discipline_totals(
-                        [s for s in month_sessions if s.started_at >= end - timedelta(days=30)]
-                    )
-
-                    with ui.row().classes("w-full gap-4 flex-wrap"):
-                        # --- Weekly stacked bar chart ---
-                        with ui.card().classes("flex-1").style(
-                            f"background-color: {SURFACE}; min-width: 360px;"
-                        ):
-                            ui.label("Last 8 weeks · minutes by discipline") \
-                                .classes("text-sm font-bold mb-2").style(f"color: {TEXT}")
-                            if not weekly["series"]:
-                                with ui.column().classes("empty-state w-full items-center gap-2"):
-                                    ui.icon("bar_chart").style(f"color: {MUTED}; font-size: 2.5rem;")
-                                    ui.label("Not enough data yet.").classes("text-sm")
-                            else:
-                                bar_series = [
-                                    {
-                                        "name": DISCIPLINE_LABELS.get(d, d),
-                                        "type": "bar",
-                                        "stack": "total",
-                                        "data": values,
-                                        "itemStyle": {"color": DISCIPLINE_COLORS.get(d, ACCENT)},
-                                    }
-                                    for d, values in weekly["series"].items()
-                                ]
-                                ui.echart({
-                                    "tooltip": {
-                                        "trigger": "axis",
-                                        "axisPointer": {"type": "shadow"},
-                                        "backgroundColor": SURFACE,
-                                        "borderColor": MUTED,
-                                        "textStyle": {"color": TEXT},
-                                    },
-                                    "legend": {
-                                        "textStyle": {"color": MUTED},
-                                        "top": 0,
-                                    },
-                                    "grid": {"left": 40, "right": 16, "top": 36, "bottom": 24},
-                                    "xAxis": {
-                                        "type": "category",
-                                        "data": weekly["weeks"],
-                                        "axisLabel": {"color": MUTED, "fontSize": 10},
-                                        "axisLine": {"lineStyle": {"color": MUTED}},
-                                    },
-                                    "yAxis": {
-                                        "type": "value",
-                                        "axisLabel": {"color": MUTED, "fontSize": 10},
-                                        "splitLine": {"lineStyle": {"color": "#2a2925"}},
-                                    },
-                                    "series": bar_series,
-                                }).classes("w-full").style("height: 280px;")
-
-                        # --- Discipline donut ---
-                        with ui.card().classes("flex-1").style(
-                            f"background-color: {SURFACE}; min-width: 280px;"
-                        ):
-                            ui.label("Last 30 days · discipline split") \
-                                .classes("text-sm font-bold mb-2").style(f"color: {TEXT}")
+                        # Discipline split donut.
+                        with ui.card().classes("p-5").style(f"background-color: {SURFACE}"):
+                            ui.label("Discipline split · 30d").classes("s-section").style("margin-bottom: 8px;")
+                            totals = discipline_totals(
+                                [s for s in month_sessions if s.started_at >= end - timedelta(days=30)]
+                            )
                             if not totals:
                                 with ui.column().classes("empty-state w-full items-center gap-2"):
                                     ui.icon("donut_large").style(f"color: {MUTED}; font-size: 2.5rem;")
@@ -728,7 +855,7 @@ def index(request: Request) -> None:
                                         "trigger": "item",
                                         "formatter": "{b}: {c} min ({d}%)",
                                         "backgroundColor": SURFACE,
-                                        "borderColor": MUTED,
+                                        "borderColor": HAIRLINE,
                                         "textStyle": {"color": TEXT},
                                     },
                                     "legend": {
@@ -740,21 +867,77 @@ def index(request: Request) -> None:
                                     "series": [{
                                         "name": "Minutes",
                                         "type": "pie",
-                                        "radius": ["45%", "70%"],
+                                        "radius": ["52%", "72%"],
                                         "center": ["65%", "50%"],
                                         "avoidLabelOverlap": True,
-                                        "itemStyle": {"borderColor": SURFACE, "borderWidth": 2},
+                                        "itemStyle": {"borderColor": SURFACE, "borderWidth": 3},
                                         "label": {"show": False},
                                         "labelLine": {"show": False},
                                         "data": pie_data,
                                     }],
-                                }).classes("w-full").style("height: 280px;")
+                                }).classes("w-full").style("height: 240px;")
+
+                stats_panel()
+
+                # ---- Weekly trend (stacked bar by discipline) ----
+                @ui.refreshable
+                def charts_row() -> None:
+                    end = datetime.now()
+                    try:
+                        month_sessions = list_user_sessions(current_user_id, end - timedelta(days=60), end)
+                    except Exception:
+                        log.exception("charts_row.list_sessions uid=%s", current_user_id)
+                        return
+
+                    weekly = weekly_discipline_minutes(month_sessions, n_weeks=8)
+
+                    with ui.card().classes("w-full p-5").style(f"background-color: {SURFACE}"):
+                        ui.label("Last 8 weeks · minutes by discipline").classes("s-section") \
+                            .style("margin-bottom: 8px;")
+                        if not weekly["series"]:
+                            with ui.column().classes("empty-state w-full items-center gap-2"):
+                                ui.icon("bar_chart").style(f"color: {MUTED}; font-size: 2.5rem;")
+                                ui.label("Not enough data yet.").classes("text-sm")
+                        else:
+                            bar_series = [
+                                {
+                                    "name": DISCIPLINE_LABELS.get(d, d),
+                                    "type": "bar",
+                                    "stack": "total",
+                                    "data": values,
+                                    "itemStyle": {"color": DISCIPLINE_COLORS.get(d, ACCENT)},
+                                }
+                                for d, values in weekly["series"].items()
+                            ]
+                            ui.echart({
+                                "tooltip": {
+                                    "trigger": "axis",
+                                    "axisPointer": {"type": "shadow"},
+                                    "backgroundColor": SURFACE,
+                                    "borderColor": HAIRLINE,
+                                    "textStyle": {"color": TEXT},
+                                },
+                                "legend": {"textStyle": {"color": MUTED}, "top": 0},
+                                "grid": {"left": 40, "right": 16, "top": 36, "bottom": 24},
+                                "xAxis": {
+                                    "type": "category",
+                                    "data": weekly["weeks"],
+                                    "axisLabel": {"color": MUTED, "fontSize": 10},
+                                    "axisLine": {"lineStyle": {"color": HAIRLINE}},
+                                },
+                                "yAxis": {
+                                    "type": "value",
+                                    "axisLabel": {"color": MUTED, "fontSize": 10},
+                                    "splitLine": {"lineStyle": {"color": TRACK}},
+                                },
+                                "series": bar_series,
+                            }).classes("w-full").style("height: 280px;")
 
                 charts_row()
 
-                # Recent sessions snapshot (last 5)
-                with ui.card().classes("w-full").style(f"background-color: {SURFACE}"):
-                    ui.label("Recent activity").classes("text-lg font-bold mb-2")
+                # ---- Recent sessions (table-style rows) ----
+                with ui.card().classes("w-full p-5").style(f"background-color: {SURFACE}"):
+                    ui.label("Recent sessions").classes("s-section").style("margin-bottom: 6px;")
 
                     @ui.refreshable
                     def recent_snapshot() -> None:
@@ -769,26 +952,31 @@ def index(request: Request) -> None:
                                 ui.icon("history").style(f"color: {MUTED}; font-size: 2.5rem;")
                                 ui.label("No sessions yet — log your first one to see it here.").classes("text-sm")
                             return
-                        for s in list(reversed(sessions))[:5]:
+                        recent = list(reversed(sessions))[:5]
+                        for i, s in enumerate(recent):
                             color = DISCIPLINE_COLORS.get(s.data.discipline, ACCENT)
-                            with ui.row().classes("w-full items-center gap-3 p-2"):
-                                ui.icon(DISCIPLINE_ICONS.get(s.data.discipline, "circle")) \
-                                    .style(f"color: {color}; font-size: 1.5rem;")
+                            border = f"border-top: 1px solid {HAIRLINE};" if i else ""
+                            with ui.row().classes("s-row w-full items-center gap-3 no-wrap") \
+                                    .style(f"padding: 12px 8px; {border}"):
+                                _disc_icon_tile(s.data.discipline)
                                 with ui.column().classes("gap-0 flex-grow"):
-                                    ui.label(
-                                        f"{DISCIPLINE_LABELS.get(s.data.discipline, s.data.discipline)} · "
-                                        f"{s.started_at.strftime('%b %d %H:%M')}"
-                                    ).classes("text-sm font-semibold").style(f"color: {TEXT}")
-                                    ui.label(f"{total_minutes(s.data)} min").style(f"color: {MUTED}").classes("text-xs")
+                                    ui.label(DISCIPLINE_LABELS.get(s.data.discipline, s.data.discipline)) \
+                                        .style(f"color: {TEXT}; font-weight: 600; font-size: 0.9rem;")
+                                    ui.label(s.started_at.strftime("%a %b %d · %H:%M").upper()) \
+                                        .classes("s-label").style("letter-spacing: 0.05em;")
+                                with ui.row().classes("items-baseline gap-1"):
+                                    ui.label(str(total_minutes(s.data))).classes("s-stat") \
+                                        .style(f"color: {color}; font-size: 1.05rem; font-weight: 800;")
+                                    ui.label("min").style(f"color: {MUTED}; font-size: 0.7rem; font-weight: 600;")
 
                     recent_snapshot()
 
         # ============= LOG WORKOUT =============
         with ui.tab_panel(tab_log).classes("p-0"):
             with ui.column().classes("page-content w-full gap-4 p-6"):
-                # Quick-add stepper (Apple-workout-picker style): step 1 is a
-                # grid of discipline tiles; step 2 shows only that
-                # discipline's fields. `picked` drives which step renders.
+                # Quick-add stepper: step 1 is a grid of discipline tiles; step
+                # 2 shows only that discipline's fields. `picked` drives which
+                # step renders.
                 picked: dict = {"value": None}
 
                 @ui.refreshable
@@ -797,23 +985,24 @@ def index(request: Request) -> None:
 
                     # ---- Step 1: pick a workout ----
                     if d is None:
-                        with ui.column().classes("gap-0"):
-                            ui.label("Log a workout").classes("text-3xl font-extrabold").style(f"color: {TEXT}")
-                            ui.label("What did you train?").classes("text-sm").style(f"color: {MUTED}")
+                        with ui.column().classes("gap-1"):
+                            ui.label("Log a session").classes("s-stat text-3xl").style(f"color: {TEXT}")
+                            ui.label("What did you train?").classes("s-label")
                         with ui.element("div").classes("disc-grid w-full"):
                             for disc in DISCIPLINES:
                                 disc_color = DISCIPLINE_COLORS[disc]
-                                with ui.card().classes("disc-tile cursor-pointer items-center p-5 gap-3").style(
-                                    f"background-color: {SURFACE};"
+                                with ui.card().classes("disc-tile items-center p-5 gap-3").style(
+                                    f"background-color: {SURFACE}; --disc: {disc_color};"
                                 ) as disc_tile:
-                                    with ui.element("div").classes("icon-bubble bubble-lg").style(
-                                        f"background-color: {disc_color}26;"
+                                    with ui.element("div").classes("icon-tile").style(
+                                        "width:54px;height:54px;"
                                     ):
                                         ui.icon(DISCIPLINE_ICONS[disc]).style(
-                                            f"color: {disc_color}; font-size: 1.9rem;"
+                                            f"color: {disc_color}; font-size: 1.7rem;"
                                         )
-                                    ui.label(DISCIPLINE_LABELS[disc]).classes("font-semibold text-sm") \
-                                        .style(f"color: {TEXT}")
+                                    ui.label(DISCIPLINE_LABELS[disc]).style(
+                                        f"color: {TEXT}; font-weight: 600; font-size: 0.85rem;"
+                                    )
                                 disc_tile.on("click", lambda disc=disc: pick(disc))
                         return
 
@@ -822,17 +1011,13 @@ def index(request: Request) -> None:
                     with ui.row().classes("items-center gap-3 w-full"):
                         ui.button(icon="arrow_back", on_click=go_back) \
                             .props("flat round dense").style(f"color: {MUTED}")
-                        with ui.element("div").classes("icon-bubble bubble-sm").style(
-                            f"background-color: {color}26;"
-                        ):
-                            ui.icon(DISCIPLINE_ICONS.get(d, "circle")) \
-                                .style(f"color: {color}; font-size: 1.3rem;")
-                        ui.label(DISCIPLINE_LABELS.get(d, d)).classes("text-2xl font-extrabold") \
+                        _disc_icon_tile(d, tile=42, glyph=1.3)
+                        ui.label(DISCIPLINE_LABELS.get(d, d)).classes("s-stat text-2xl") \
                             .style(f"color: {TEXT}")
 
                     if editing_id["value"]:
-                        with ui.row().classes("items-center gap-2 p-2 rounded") \
-                                .style(f"background-color: {SURFACE_HI};"):
+                        with ui.row().classes("items-center gap-2 p-3 rounded") \
+                                .style(f"background-color: {ELEVATED};"):
                             ui.icon("edit").style(f"color: {ACCENT}")
                             ui.label("Editing — Save to update, Cancel to discard").classes("text-sm") \
                                 .style(f"color: {ACCENT}")
@@ -856,7 +1041,7 @@ def index(request: Request) -> None:
                                     .props("dark outlined dense").bind_value(session_state, "sparring_rounds")
                                 ui.number("Round length (min)", value=session_state["round_length_minutes"], min=1) \
                                     .props("dark outlined dense").bind_value(session_state, "round_length_minutes")
-                            ui.label("Log entries").classes("text-sm mt-2").style(f"color: {MUTED}")
+                            ui.label("Log entries").classes("s-label mt-2")
                             nonlocal_col = ui.column().classes("w-full gap-2")
                             entries.clear()
                             _new_entry_row(nonlocal_col, entries)
@@ -875,7 +1060,7 @@ def index(request: Request) -> None:
                                     .props("dark outlined dense").bind_value(session_state, "sparring_rounds")
                                 ui.number("Round length (min)", value=session_state.get("round_length_minutes", 5), min=1) \
                                     .props("dark outlined dense").bind_value(session_state, "round_length_minutes")
-                            ui.label("Log entries").classes("text-sm mt-2").style(f"color: {MUTED}")
+                            ui.label("Log entries").classes("s-label mt-2")
                             nonlocal_col = ui.column().classes("w-full gap-2")
                             entries.clear()
                             _new_entry_row(nonlocal_col, entries)
@@ -891,7 +1076,7 @@ def index(request: Request) -> None:
                                     .props("dark outlined dense").bind_value(session_state, "sparring_rounds")
                                 ui.number("Round length (min)", value=session_state.get("round_length_minutes", 3), min=1) \
                                     .props("dark outlined dense").bind_value(session_state, "round_length_minutes")
-                            ui.label("Log entries").classes("text-sm mt-2").style(f"color: {MUTED}")
+                            ui.label("Log entries").classes("s-label mt-2")
                             nonlocal_col = ui.column().classes("w-full gap-2")
                             entries.clear()
                             _new_entry_row(nonlocal_col, entries)
@@ -917,7 +1102,7 @@ def index(request: Request) -> None:
                             with ui.row().classes("w-full gap-4"):
                                 ui.number("Total duration (min)", value=session_state["weights_duration_minutes"], min=0) \
                                     .props("dark outlined dense").bind_value(session_state, "weights_duration_minutes")
-                            ui.label("Exercises").classes("text-sm mt-2").style(f"color: {MUTED}")
+                            ui.label("Exercises").classes("s-label mt-2")
                             ex_col = ui.column().classes("w-full gap-2")
                             exercises.clear()
                             _new_exercise_row(ex_col, exercises)
@@ -931,9 +1116,9 @@ def index(request: Request) -> None:
                             ui.button("Add row", on_click=lambda: add_row(), icon="add") \
                                 .props("flat dense no-caps").style(f"color: {ACCENT}")
 
-                        ui.button("Save workout", on_click=on_save, icon="check") \
-                            .props("size=lg no-caps").classes("w-full mt-2") \
-                            .style(f"background-color: {color}; color: {BG}; font-weight: 700;")
+                        ui.button("Save session", on_click=on_save, icon="check") \
+                            .props("size=lg no-caps unelevated").classes("w-full mt-2") \
+                            .style(f"background-color: {color}; color: #FFFFFF; font-weight: 700;")
 
                 log_flow()
 
@@ -1081,7 +1266,8 @@ def index(request: Request) -> None:
         # ============= HISTORY =============
         with ui.tab_panel(tab_history).classes("p-0"):
             with ui.column().classes("page-content w-full gap-4 p-6"):
-                ui.label("History").classes("text-2xl font-bold").style(f"color: {TEXT}")
+                ui.label("History").classes("s-stat text-2xl").style(f"color: {TEXT}")
+                ui.label("Last 30 days").classes("s-label")
 
                 def on_delete(session_id: str):
                     with ui.dialog() as dialog, ui.card().style(f"background-color: {SURFACE}; color: {TEXT}"):
@@ -1103,7 +1289,7 @@ def index(request: Request) -> None:
                             history_container.refresh()
                         with ui.row().classes("justify-end gap-2 w-full"):
                             ui.button("Cancel", on_click=dialog.close).props("flat")
-                            ui.button("Delete", on_click=confirm).props("color=negative")
+                            ui.button("Delete", on_click=confirm).props("color=negative unelevated")
                     dialog.open()
 
                 @ui.refreshable
@@ -1119,26 +1305,27 @@ def index(request: Request) -> None:
                         with ui.column().classes("empty-state w-full items-center gap-2"):
                             ui.icon("inbox").style(f"color: {MUTED}; font-size: 3rem;")
                             ui.label("No sessions in the last 30 days.").classes("text-sm")
-                            ui.label("Head to the Log Session tab to add one.").classes("text-xs")
+                            ui.label("Head to the Log tab to add one.").classes("text-xs")
                         return
 
                     for s in reversed(sessions):
                         color = DISCIPLINE_COLORS.get(s.data.discipline, ACCENT)
-                        icon = DISCIPLINE_ICONS.get(s.data.discipline, "circle")
                         label = DISCIPLINE_LABELS.get(s.data.discipline, s.data.discipline)
 
-                        with ui.card().classes("session-card w-full").style(
-                            f"background-color: {SURFACE}; border-left: 4px solid {color};"
+                        with ui.card().classes("session-card w-full p-4 gap-3").style(
+                            f"background-color: {SURFACE};"
                         ):
-                            with ui.row().classes("w-full items-center gap-3"):
-                                ui.icon(icon).style(f"color: {color}; font-size: 1.7rem;")
+                            with ui.row().classes("w-full items-center gap-3 no-wrap"):
+                                _disc_icon_tile(s.data.discipline, tile=42, glyph=1.3)
                                 with ui.column().classes("gap-0 flex-grow"):
-                                    ui.label(
-                                        f"{label} · {s.started_at.strftime('%a %b %d · %H:%M')}"
-                                    ).classes("font-bold").style(f"color: {TEXT}")
-                                    ui.label(f"{total_minutes(s.data)} total minutes") \
-                                        .classes("text-xs").style(f"color: {MUTED}")
-                                ui.button(icon="delete", on_click=lambda sid=s.id: on_delete(sid)) \
+                                    ui.label(label).style(f"color: {TEXT}; font-weight: 600;")
+                                    ui.label(s.started_at.strftime("%a %b %d · %H:%M").upper()) \
+                                        .classes("s-label").style("letter-spacing: 0.05em;")
+                                with ui.row().classes("items-baseline gap-1"):
+                                    ui.label(str(total_minutes(s.data))).classes("s-stat") \
+                                        .style(f"color: {color}; font-size: 1.3rem; font-weight: 800;")
+                                    ui.label("min").style(f"color: {MUTED}; font-size: 0.7rem; font-weight: 600;")
+                                ui.button(icon="delete_outline", on_click=lambda sid=s.id: on_delete(sid)) \
                                     .props("flat dense round size=sm").style(f"color: {MUTED}")
 
                             # Discipline-specific summary
@@ -1146,14 +1333,13 @@ def index(request: Request) -> None:
                                 ui.label(
                                     f"drill {s.data.drilling_minutes}min · "
                                     f"{s.data.sparring_rounds}×{s.data.round_length_minutes}min rolls"
-                                ).classes("text-sm").style(f"color: {MUTED}")
+                                ).classes("text-sm").style(f"color: {TEXT2}")
                                 for e in s.data.log_entries:
-                                    ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm mt-1")
+                                    ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm mt-1") \
+                                        .style(f"color: {TEXT}")
                                     with ui.row().classes("gap-1 ml-4 flex-wrap"):
                                         for t in e.tags:
-                                            ui.label(f"{t.technique} · {t.position}") \
-                                                .classes("text-xs font-semibold px-2 py-0.5 rounded-full") \
-                                                .style(f"background-color: {color}; color: {BG};")
+                                            _tag_pill(f"{t.technique} · {t.position}", color)
 
                             elif isinstance(s.data, MmaData):
                                 parts = []
@@ -1165,27 +1351,25 @@ def index(request: Request) -> None:
                                     parts.append(f"S→TD {s.data.strikes_to_takedown_minutes}min")
                                 if s.data.sparring_rounds:
                                     parts.append(f"{s.data.sparring_rounds}×{s.data.round_length_minutes}min sparring")
-                                ui.label(" · ".join(parts)).classes("text-sm").style(f"color: {MUTED}")
+                                ui.label(" · ".join(parts)).classes("text-sm").style(f"color: {TEXT2}")
                                 for e in s.data.log_entries:
-                                    ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm mt-1")
+                                    ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm mt-1") \
+                                        .style(f"color: {TEXT}")
                                     with ui.row().classes("gap-1 ml-4 flex-wrap"):
                                         for t in e.tags:
-                                            ui.label(f"{t.technique} · {t.position}") \
-                                                .classes("text-xs font-semibold px-2 py-0.5 rounded-full") \
-                                                .style(f"background-color: {color}; color: {BG};")
+                                            _tag_pill(f"{t.technique} · {t.position}", color)
 
                             elif isinstance(s.data, StrikingData):
                                 ui.label(
                                     f"bag {s.data.bag_minutes}min · pads {s.data.pad_minutes}min · "
                                     f"{s.data.sparring_rounds}×{s.data.round_length_minutes}min sparring"
-                                ).classes("text-sm").style(f"color: {MUTED}")
+                                ).classes("text-sm").style(f"color: {TEXT2}")
                                 for e in s.data.log_entries:
-                                    ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm mt-1")
+                                    ui.label(f"[{e.category}] {e.notes_raw}").classes("text-sm mt-1") \
+                                        .style(f"color: {TEXT}")
                                     with ui.row().classes("gap-1 ml-4 flex-wrap"):
                                         for t in e.tags:
-                                            ui.label(f"{t.technique} · {t.position}") \
-                                                .classes("text-xs font-semibold px-2 py-0.5 rounded-full") \
-                                                .style(f"background-color: {color}; color: {BG};")
+                                            _tag_pill(f"{t.technique} · {t.position}", color)
 
                             elif isinstance(s.data, CardioData):
                                 parts = [f"{s.data.activity_type}", f"{s.data.duration_minutes}min", s.data.intensity]
@@ -1193,20 +1377,30 @@ def index(request: Request) -> None:
                                     parts.append(f"{s.data.distance_km}km")
                                 if s.data.heart_rate_avg:
                                     parts.append(f"{s.data.heart_rate_avg}bpm")
-                                ui.label(" · ".join(parts)).classes("text-sm").style(f"color: {MUTED}")
+                                ui.label(" · ".join(parts)).classes("text-sm").style(f"color: {TEXT2}")
 
                             elif isinstance(s.data, WeightsData):
                                 ui.label(f"{s.data.duration_minutes}min · {len(s.data.exercises)} exercises") \
-                                    .classes("text-sm").style(f"color: {MUTED}")
+                                    .classes("text-sm").style(f"color: {TEXT2}")
                                 for ex in s.data.exercises:
                                     wt = f" @ {ex.weight_kg}kg" if ex.weight_kg else ""
-                                    ui.label(f"  {ex.name} — {ex.sets}×{ex.reps}{wt}").classes("text-sm")
+                                    ui.label(f"  {ex.name} — {ex.sets}×{ex.reps}{wt}").classes("text-sm") \
+                                        .style(f"color: {TEXT}")
 
                             if s.notes:
                                 ui.label(f"note: {s.notes}").classes("text-xs italic mt-1") \
                                     .style(f"color: {MUTED}")
 
                 history_container()
+
+
+def _tag_pill(text: str, color: str) -> None:
+    """A soft (tinted) technique badge — color = meaning, never decoration."""
+    ui.label(text).classes("text-xs font-bold px-2 py-0.5 rounded") \
+        .style(
+            f"color: {color}; background-color: color-mix(in srgb, {color} 16%, transparent); "
+            f"letter-spacing: 0.04em;"
+        )
 
 
 if __name__ in {"__main__", "__mp_main__"}:
