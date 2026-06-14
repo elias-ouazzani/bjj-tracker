@@ -30,3 +30,9 @@ htmlcov/
 
 # NiceGUI runtime (session storage backing files)
 .nicegui/
+
+# Local dev-server logs / throwaway diagnostics (never commit)
+boot.log
+boot.err
+*.log
+_diag*.py
