@@ -581,7 +581,7 @@ def _apply_theme() -> None:
       @media (min-width: 640px) {{ .disc-grid {{ grid-template-columns: repeat(3, minmax(0,1fr)); }} }}
       @media (min-width: 1024px) {{ .disc-grid {{ grid-template-columns: repeat(4, minmax(0,1fr)); }} }}
       .disc-tile {{ transition: background 0.14s ease, outline-color 0.14s ease;
-        outline: 1.5px solid transparent; cursor: pointer; }}
+        outline: 1.5px solid transparent; outline-offset: -2px; cursor: pointer; }}
       .disc-tile:hover {{ background: {ELEVATED} !important; outline-color: var(--disc, transparent); }}
       .disc-tile:active {{ transform: scale(0.98); }}
 
