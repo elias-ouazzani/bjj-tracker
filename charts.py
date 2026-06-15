@@ -19,6 +19,7 @@ from models import (
     CardioData,
     GrapplingData,
     MmaData,
+    RecoveryLog,
     Session,
     StrikingData,
     WeightsData,
@@ -107,3 +108,69 @@ def discipline_totals(sessions: list[Session]) -> dict[str, int]:
             continue
         totals[s.data.discipline] = totals.get(s.data.discipline, 0) + m
     return totals
+
+
+# ---------------------------------------------------------------------
+# Recovery score
+#
+# A 0–100 score balancing recovery input (sleep) against training stress
+# (minutes trained that day). More sleep relative to training = higher
+# recovery. The two tuning constants below define the curve:
+#
+#   score = clamp( (sleep / TARGET) * 100  -  (training_min / 60) * PENALTY , 0, 100)
+#
+# Worked examples (the spec's anchors):
+#   1h training + 8h sleep -> (8/8)*100 - (60/60)*15  = 100 - 15 =  85  (high)
+#   3h training + 5h sleep -> (5/8)*100 - (180/60)*15 = 62.5 - 45 = 18  (low)
+#
+# Active-recovery activities (sauna/massage/etc.) are intentionally NOT
+# part of the score — they're logged for the record only.
+# ---------------------------------------------------------------------
+
+SLEEP_TARGET_HOURS = 8        # hours of sleep that maxes out the sleep term
+STRAIN_PENALTY_PER_HOUR = 15  # score points subtracted per hour trained
+
+
+def daily_recovery_score(sleep_hours: float, training_minutes: int) -> int:
+    """The core formula. Returns an int in [0, 100]."""
+    sleep_factor = (sleep_hours / SLEEP_TARGET_HOURS) * 100
+    strain_factor = (training_minutes / 60) * STRAIN_PENALTY_PER_HOUR
+    return round(max(0.0, min(100.0, sleep_factor - strain_factor)))
+
+
+def recovery_score_on(
+    day: date, recovery_logs: list[RecoveryLog], sessions: list[Session]
+) -> int | None:
+    """Recovery score for one calendar day, or None if no sleep was logged
+    that day (we can't score recovery without a sleep input).
+
+    Sleep is summed across that day's logs (normally one); training minutes
+    are summed across that day's sessions.
+    """
+    day_logs = [r for r in recovery_logs if r.logged_at.date() == day and r.sleep_hours]
+    if not day_logs:
+        return None
+    sleep = sum(r.sleep_hours or 0 for r in day_logs)
+    training = sum(total_minutes(s.data) for s in sessions if s.started_at.date() == day)
+    return daily_recovery_score(sleep, training)
+
+
+def weekly_recovery_score(
+    recovery_logs: list[RecoveryLog],
+    sessions: list[Session],
+    *,
+    today: date | None = None,
+) -> int | None:
+    """Average daily recovery score over the last 7 days (today inclusive),
+    counting only days that have a sleep log. None if no day qualifies.
+    """
+    if today is None:
+        today = date.today()
+    scores = []
+    for i in range(7):
+        sc = recovery_score_on(today - timedelta(days=i), recovery_logs, sessions)
+        if sc is not None:
+            scores.append(sc)
+    if not scores:
+        return None
+    return round(sum(scores) / len(scores))

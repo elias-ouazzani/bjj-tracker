@@ -145,3 +145,45 @@ class Session(BaseModel):
     started_at: datetime          # session start time
     notes: str | None = None      # optional session-level note
     data: SessionData             # discriminated union — varies by discipline
+
+
+# ---------------------------------------------------------------------
+# Recovery — a separate concept from training.
+#
+# Recovery is deliberately NOT a Session discipline. A session measures
+# training *stress* (minutes trained); a RecoveryLog measures what you
+# did to *recover* (sleep + active recovery). Mixing them would pollute
+# training stats — the weekly-load gauge, streak, discipline split, and
+# charts all sum `total_minutes(session.data)`, and a sauna is not a
+# workout. They live in their own collection (`recovery_logs`) and feed
+# the recovery score, which reads sleep from here and training minutes
+# from sessions.
+# ---------------------------------------------------------------------
+
+# The four active-recovery types the UI offers. Sleep is handled by its
+# own field on RecoveryLog, not as an activity.
+RecoveryActivityType = Literal["sauna", "massage", "ice_bath", "stretching"]
+
+
+class RecoveryActivity(BaseModel):
+    """One active-recovery block inside a RecoveryLog (e.g. 15 min sauna)."""
+
+    activity_type: RecoveryActivityType
+    minutes: int = 0
+
+
+class RecoveryLog(BaseModel):
+    """One day's recovery for one user: sleep + any active-recovery blocks.
+
+    Like Session, `id` is None until saved. `logged_at` is the day the
+    recovery is for (the UI stamps it at noon, since recovery is tracked
+    per-day, not per-minute). `sleep_hours` is hours in bed and may be
+    None if the user only logged an activity.
+    """
+
+    id: str | None = None
+    user_id: str
+    logged_at: datetime
+    sleep_hours: float | None = None        # hours in bed
+    activities: list[RecoveryActivity] = []
+    notes: str | None = None

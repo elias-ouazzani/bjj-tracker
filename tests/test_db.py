@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import db
-from models import CardioData, GrapplingData, Session
+from models import CardioData, GrapplingData, RecoveryActivity, RecoveryLog, Session
 
 
 @pytest.fixture
@@ -176,3 +176,81 @@ def test_client_skips_init_if_already_initialized(monkeypatch):
 
     db._client()
     fake_init.assert_not_called()
+
+
+# ------------- recovery storage -------------
+
+def _recovery(user_id="u1", id_=None) -> RecoveryLog:
+    return RecoveryLog(
+        id=id_,
+        user_id=user_id,
+        logged_at=datetime(2026, 6, 15, 12, 0),
+        sleep_hours=8,
+        activities=[RecoveryActivity(activity_type="sauna", minutes=15)],
+    )
+
+
+def test_save_recovery_new_assigns_id(fake_client):
+    doc_ref = MagicMock()
+    doc_ref.id = "rec-auto-id"
+    fake_client.collection.return_value.document.return_value = doc_ref
+
+    saved = db.save_recovery(_recovery(id_=None))
+
+    assert saved.id == "rec-auto-id"
+    fake_client.collection.assert_called_with("recovery_logs")
+    doc_ref.set.assert_called_once()
+    written = doc_ref.set.call_args[0][0]
+    assert written["id"] == "rec-auto-id"
+    assert written["sleep_hours"] == 8
+
+
+def test_save_recovery_existing_overwrites(fake_client):
+    saved = db.save_recovery(_recovery(id_="existing"))
+    assert saved.id == "existing"
+    fake_client.collection.return_value.document.assert_called_once_with("existing")
+
+
+def test_get_recovery_exists(fake_client):
+    rec = _recovery(id_="abc")
+    snap = MagicMock()
+    snap.exists = True
+    snap.to_dict.return_value = rec.model_dump(mode="json")
+    fake_client.collection.return_value.document.return_value.get.return_value = snap
+
+    result = db.get_recovery("abc")
+    assert isinstance(result, RecoveryLog)
+    assert result.id == "abc"
+
+
+def test_get_recovery_missing(fake_client):
+    snap = MagicMock()
+    snap.exists = False
+    fake_client.collection.return_value.document.return_value.get.return_value = snap
+    assert db.get_recovery("nope") is None
+
+
+def test_delete_recovery(fake_client):
+    db.delete_recovery("abc")
+    fake_client.collection.return_value.document.assert_called_once_with("abc")
+    fake_client.collection.return_value.document.return_value.delete.assert_called_once()
+
+
+def test_list_recovery_filters_by_date(fake_client):
+    in_range = _recovery(id_="a")
+    in_range.logged_at = datetime(2026, 6, 15, 12)
+    out_of_range = _recovery(id_="b")
+    out_of_range.logged_at = datetime(2026, 4, 1, 12)
+
+    doc_a = MagicMock(); doc_a.to_dict.return_value = in_range.model_dump(mode="json")
+    doc_b = MagicMock(); doc_b.to_dict.return_value = out_of_range.model_dump(mode="json")
+    query = fake_client.collection.return_value.where.return_value
+    query.stream.return_value = [doc_a, doc_b]
+
+    results = db.list_recovery(
+        user_id="u1",
+        start=datetime(2026, 6, 1),
+        end=datetime(2026, 6, 30),
+    )
+    assert len(results) == 1
+    assert results[0].id == "a"

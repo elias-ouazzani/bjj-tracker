@@ -4,15 +4,19 @@ from datetime import date, datetime, timedelta
 
 from charts import (
     current_streak,
+    daily_recovery_score,
     discipline_totals,
+    recovery_score_on,
     total_minutes,
     weekly_discipline_minutes,
+    weekly_recovery_score,
 )
 from models import (
     CardioData,
     Exercise,
     GrapplingData,
     MmaData,
+    RecoveryLog,
     Session,
     StrikingData,
     WeightsData,
@@ -22,6 +26,10 @@ from models import (
 # Helper: build a Session quickly
 def _session(when: datetime, data) -> Session:
     return Session(id=None, user_id="u", started_at=when, data=data)
+
+
+def _recovery(when: datetime, sleep_hours=None) -> RecoveryLog:
+    return RecoveryLog(id=None, user_id="u", logged_at=when, sleep_hours=sleep_hours)
 
 
 # ---------------- total_minutes ----------------
@@ -133,3 +141,79 @@ class TestDisciplineTotals:
         ]
         result = discipline_totals(sessions)
         assert result == {"cardio": 30}
+
+
+# ---------------- daily_recovery_score ----------------
+
+class TestDailyRecoveryScore:
+    def test_spec_anchor_high(self):
+        # 1h training + 8h sleep -> 100 - 15 = 85 (high)
+        assert daily_recovery_score(sleep_hours=8, training_minutes=60) == 85
+
+    def test_spec_anchor_low(self):
+        # 3h training + 5h sleep -> 62.5 - 45 = 17.5 -> 18 (low)
+        assert daily_recovery_score(sleep_hours=5, training_minutes=180) == 18
+
+    def test_rest_day_full_sleep_maxes_out(self):
+        assert daily_recovery_score(sleep_hours=8, training_minutes=0) == 100
+
+    def test_clamped_at_zero(self):
+        # huge training, little sleep can't go negative
+        assert daily_recovery_score(sleep_hours=2, training_minutes=600) == 0
+
+    def test_clamped_at_hundred(self):
+        # oversleeping can't exceed 100
+        assert daily_recovery_score(sleep_hours=12, training_minutes=0) == 100
+
+
+# ---------------- recovery_score_on ----------------
+
+class TestRecoveryScoreOn:
+    def test_none_without_sleep_log(self):
+        day = date(2026, 6, 15)
+        # a recovery log exists but with no sleep -> can't score
+        logs = [_recovery(datetime(2026, 6, 15, 12), sleep_hours=None)]
+        assert recovery_score_on(day, logs, []) is None
+
+    def test_uses_that_days_training(self):
+        day = date(2026, 6, 15)
+        logs = [_recovery(datetime(2026, 6, 15, 12), sleep_hours=8)]
+        sessions = [
+            _session(datetime(2026, 6, 15, 9), GrapplingData(discipline="bjj", drilling_minutes=60)),
+            _session(datetime(2026, 6, 14, 9), GrapplingData(discipline="bjj", drilling_minutes=120)),  # other day
+        ]
+        # only the 60-min same-day session counts: 100 - 15 = 85
+        assert recovery_score_on(day, logs, sessions) == 85
+
+    def test_sums_sleep_across_logs_same_day(self):
+        day = date(2026, 6, 15)
+        logs = [
+            _recovery(datetime(2026, 6, 15, 6), sleep_hours=5),
+            _recovery(datetime(2026, 6, 15, 14), sleep_hours=3),  # nap
+        ]
+        # 8h total, no training -> 100
+        assert recovery_score_on(day, logs, []) == 100
+
+
+# ---------------- weekly_recovery_score ----------------
+
+class TestWeeklyRecoveryScore:
+    def test_none_when_no_sleep_logged(self):
+        assert weekly_recovery_score([], [], today=date(2026, 6, 15)) is None
+
+    def test_averages_daily_scores(self):
+        today = date(2026, 6, 15)
+        logs = [
+            _recovery(datetime(2026, 6, 15, 12), sleep_hours=8),  # -> 100 (no training)
+            _recovery(datetime(2026, 6, 14, 12), sleep_hours=4),  # -> 50 (no training)
+        ]
+        # avg(100, 50) = 75
+        assert weekly_recovery_score(logs, [], today=today) == 75
+
+    def test_ignores_days_outside_window(self):
+        today = date(2026, 6, 15)
+        logs = [
+            _recovery(datetime(2026, 6, 15, 12), sleep_hours=8),   # in window -> 100
+            _recovery(datetime(2026, 6, 1, 12), sleep_hours=4),    # >7 days ago, ignored
+        ]
+        assert weekly_recovery_score(logs, [], today=today) == 100

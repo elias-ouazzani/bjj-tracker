@@ -32,8 +32,10 @@ from auth import verify_id_token
 from charts import (
     current_streak,
     discipline_totals,
+    recovery_score_on,
     total_minutes,
     weekly_discipline_minutes,
+    weekly_recovery_score,
 )
 from services.sessions import (
     SessionAccessDenied,
@@ -42,12 +44,21 @@ from services.sessions import (
     list_user_sessions,
     save_user_session,
 )
+from services.recovery import (
+    RecoveryAccessDenied,
+    RecoveryNotFound,
+    delete_user_recovery,
+    list_user_recovery,
+    save_user_recovery,
+)
 from models import (
     CardioData,
     Exercise,
     GrapplingData,
     LogEntry,
     MmaData,
+    RecoveryActivity,
+    RecoveryLog,
     Session,
     StrikingData,
     WeightsData,
@@ -307,6 +318,8 @@ FAINT = "#4A4A4A"       # disabled, ghosted
 
 # --- Semantic / meaning colors ---
 RECOVERY = "#00C853"
+RECOVERY_START = "#00C853"   # recovery-ring gradient (green, mirrors STRAIN_*)
+RECOVERY_END = "#69F0AE"
 STRAIN_START = "#FF4500"
 STRAIN_END = "#FF6B00"
 STRAIN = "#FF5A1F"      # strain solid midpoint — the primary accent
@@ -359,6 +372,23 @@ DISCIPLINE_LABELS: dict[str, str] = {
 
 DISCIPLINES = list(DISCIPLINE_COLORS.keys())
 INTENSITIES = ["low", "moderate", "high"]
+
+# Active-recovery activities offered on the Recovery tab. Sleep is its own
+# field, not an activity. These are logged for the record only — they do
+# NOT feed the recovery score (which is sleep vs training load).
+RECOVERY_ACTIVITIES = ["sauna", "massage", "ice_bath", "stretching"]
+RECOVERY_ACTIVITY_ICONS: dict[str, str] = {
+    "sauna":      "hot_tub",
+    "massage":    "spa",
+    "ice_bath":   "ac_unit",
+    "stretching": "self_improvement",
+}
+RECOVERY_ACTIVITY_LABELS: dict[str, str] = {
+    "sauna":      "Sauna",
+    "massage":    "Massage",
+    "ice_bath":   "Ice bath",
+    "stretching": "Stretching",
+}
 
 # The gauge-arc brand mark from the handoff (assets/logo-mark.svg), inlined so
 # we never depend on a static-file route. Used in the header and on login.
@@ -609,6 +639,19 @@ def _metric_row(icon: str, label: str, value, *, unit: str = "", accent: str = T
                 ui.label(unit).style(f"color: {MUTED}; font-size: 0.75rem; font-weight: 600;")
 
 
+def _recovery_band(score):
+    """Map a recovery score (0–100, or None) to its traffic-light identity:
+    (gradient_stops, solid_color, sublabel). Red = bad, yellow = mid, green
+    = good — so the Home ring reads at a glance."""
+    if score is None:
+        return (TRACK, TRACK), MUTED, "Log last night's sleep"
+    if score >= 67:
+        return (RECOVERY_START, RECOVERY_END), RECOVERY, "Well recovered"
+    if score >= 34:
+        return ("#FFB300", WARNING), WARNING, "Moderately recovered"
+    return (DANGER, "#FF6B5B"), DANGER, "Low — prioritise rest"
+
+
 # ---------------- Form row helpers ----------------
 
 def _new_entry_row(container, entries, notes="", category="drill"):
@@ -641,6 +684,33 @@ def _new_exercise_row(container, exercises, name="", sets=3, reps=10, weight_kg=
             ui.number("kg", value=weight_kg, min=0) \
                 .props("dark outlined dense").classes("w-24") \
                 .bind_value(state, "weight_kg")
+
+
+def _new_recovery_activity_row(container, activities, activity_type="sauna", minutes=15):
+    state = {"activity_type": activity_type, "minutes": minutes}
+    activities.append(state)
+    with container:
+        with ui.row().classes("w-full items-center gap-2") as row:
+            icon = ui.icon(RECOVERY_ACTIVITY_ICONS.get(activity_type, "spa")) \
+                .style(f"color: {RECOVERY}; font-size: 1.1rem;")
+            # Keep the leading icon in sync if the user switches the type.
+            ui.select(RECOVERY_ACTIVITY_LABELS, value=activity_type) \
+                .props("dark outlined dense").classes("flex-grow") \
+                .bind_value(state, "activity_type") \
+                .on_value_change(lambda e: icon.set_name(
+                    RECOVERY_ACTIVITY_ICONS.get(e.value, "spa")))
+            ui.number("min", value=minutes, min=0) \
+                .props("dark outlined dense").classes("w-24") \
+                .bind_value(state, "minutes")
+
+            def remove() -> None:
+                if state in activities:
+                    activities.remove(state)
+                row.delete()
+
+            ui.button(icon="close", on_click=remove) \
+                .props("flat dense round size=sm").style(f"color: {MUTED}") \
+                .tooltip("Remove")
 
 
 # ---------------- Pages ----------------
@@ -738,10 +808,19 @@ def index(request: Request) -> None:
     exercises: list[dict] = []
     editing_id: dict = {"value": None}
 
+    # Recovery form state (Recovery tab) — independent of session_state.
+    recovery_state: dict = {
+        "date": today.isoformat(),
+        "sleep_hours": None,
+        "notes": "",
+    }
+    recovery_activities: list[dict] = []
+
     # ---- Navigation: top tabs on desktop, bottom bar on phones ----
     with ui.tabs().classes("top-tabs w-full max-w-5xl mx-auto").props("no-caps") as tabs:
         tab_dash = ui.tab("Home", icon="home")
         tab_log = ui.tab("Log", icon="add_circle")
+        tab_recovery = ui.tab("Recovery", icon="spa")
         tab_history = ui.tab("History", icon="history")
 
     # Bottom bar mirrors the tabs; CSS swaps which one is visible per screen
@@ -754,6 +833,7 @@ def index(request: Request) -> None:
             for name, icon, text in (
                 ("Home", "home", "Home"),
                 ("Log", "add_circle", "Log"),
+                ("Recovery", "spa", "Recovery"),
                 ("History", "history", "History"),
             ):
                 active = current_tab["value"] == name
@@ -803,6 +883,20 @@ def index(request: Request) -> None:
                     discipline_count = len({s.data.discipline for s in month_sessions})
                     sessions_30d = len(month_sessions)
                     avg_per = round(total_min / sessions_30d) if sessions_30d else 0
+
+                    # Recovery: sleep comes from recovery_logs, training load
+                    # from the sessions above. None until a sleep log exists.
+                    try:
+                        recovery_logs = list_user_recovery(current_user_id, month_start, end)
+                    except Exception:
+                        log.exception("stats_panel.list_recovery uid=%s", current_user_id)
+                        recovery_logs = []
+                    day_recovery = recovery_score_on(end.date(), recovery_logs, month_sessions)
+                    week_recovery = weekly_recovery_score(recovery_logs, month_sessions)
+                    today_sleep = sum(
+                        r.sleep_hours or 0 for r in recovery_logs
+                        if r.logged_at.date() == end.date() and r.sleep_hours
+                    )
 
                     with ui.element("div").classes("kpi-grid w-full"):
                         _kpi_card("This week", week_mat_min, unit="min", color=STRAIN)
@@ -876,6 +970,33 @@ def index(request: Request) -> None:
                                         "data": pie_data,
                                     }],
                                 }).classes("w-full").style("height: 240px;")
+
+                    # ---- Recovery: traffic-light gauge balancing sleep vs training load ----
+                    with ui.card().classes("w-full p-5").style(f"background-color: {SURFACE}"):
+                        ui.label("Recovery").classes("s-section").style("margin-bottom: 14px;")
+                        with ui.row().classes("items-center gap-6 w-full no-wrap"):
+                            ring_stops, ring_color, sub = _recovery_band(day_recovery)
+                            week_color = _recovery_band(week_recovery)[1]
+                            ui.html(_score_ring_html(
+                                day_recovery if day_recovery is not None else 0, 100, size=172,
+                                label="recovery today", sublabel=sub,
+                                stops=ring_stops, gid="recoveryring",
+                                value_color=ring_color,
+                            ))
+                            with ui.column().classes("flex-grow gap-0"):
+                                _metric_row(
+                                    "favorite", "This week",
+                                    week_recovery if week_recovery is not None else "—",
+                                    unit="/100" if week_recovery is not None else "",
+                                    accent=week_color, divider=False,
+                                )
+                                _metric_row("bedtime", "Sleep tonight",
+                                            round(today_sleep, 1) if today_sleep else "—",
+                                            unit="h" if today_sleep else "", accent=SLEEP)
+                                _metric_row("fitness_center", "Load today",
+                                            sum(total_minutes(s.data) for s in month_sessions
+                                                if s.started_at.date() == end.date()),
+                                            unit="min")
 
                 stats_panel()
 
@@ -1262,6 +1383,161 @@ def index(request: Request) -> None:
                     editing_id["value"] = None
                     picked["value"] = None
                     log_flow.refresh()
+
+        # ============= RECOVERY =============
+        with ui.tab_panel(tab_recovery).classes("p-0"):
+            with ui.column().classes("page-content w-full gap-4 p-6"):
+
+                def add_recovery_activity(act: str) -> None:
+                    if hasattr(recovery_form, "_act_col"):
+                        _new_recovery_activity_row(recovery_form._act_col, recovery_activities, act)
+
+                @ui.refreshable
+                def recovery_form() -> None:
+                    with ui.column().classes("gap-1"):
+                        ui.label("Log recovery").classes("s-stat text-3xl").style(f"color: {TEXT}")
+                        ui.label("How did you recover?").classes("s-label")
+
+                    with ui.card().classes("w-full gap-4 p-5").style(f"background-color: {SURFACE}"):
+                        ui.input("Date", value=recovery_state["date"]) \
+                            .props("dark outlined dense type=date").classes("flex-1") \
+                            .bind_value(recovery_state, "date")
+
+                        # Sleep — the one input that drives the recovery score.
+                        ui.label("Sleep").classes("s-label mt-1")
+                        ui.number("Hours in bed", value=recovery_state["sleep_hours"],
+                                  min=0, max=24, step=0.5) \
+                            .props("dark outlined dense").classes("w-full") \
+                            .bind_value(recovery_state, "sleep_hours")
+
+                        # Active recovery — tap a tile to add a row with minutes.
+                        ui.label("Recovery activities").classes("s-label mt-2")
+                        with ui.element("div").classes("disc-grid w-full"):
+                            for act in RECOVERY_ACTIVITIES:
+                                with ui.card().classes("disc-tile items-center p-4 gap-2").style(
+                                    f"background-color: {ELEVATED}; --disc: {RECOVERY};"
+                                ) as act_tile:
+                                    with ui.element("div").classes("icon-tile").style("width:46px;height:46px;"):
+                                        ui.icon(RECOVERY_ACTIVITY_ICONS[act]).style(
+                                            f"color: {RECOVERY}; font-size: 1.5rem;"
+                                        )
+                                    ui.label(RECOVERY_ACTIVITY_LABELS[act]).style(
+                                        f"color: {TEXT}; font-weight: 600; font-size: 0.8rem;"
+                                    )
+                                act_tile.on("click", lambda act=act: add_recovery_activity(act))
+
+                        act_col = ui.column().classes("w-full gap-2")
+                        recovery_activities.clear()
+                        recovery_form._act_col = act_col
+
+                        ui.input("Notes (optional)") \
+                            .props("dark outlined dense").classes("w-full") \
+                            .bind_value(recovery_state, "notes")
+
+                        ui.button("Save recovery", on_click=on_save_recovery, icon="check") \
+                            .props("size=lg no-caps unelevated").classes("w-full mt-2") \
+                            .style(f"background-color: {RECOVERY}; color: #0D0D0D; font-weight: 700;")
+
+                async def on_save_recovery() -> None:
+                    sleep_raw = recovery_state["sleep_hours"]
+                    sleep = float(sleep_raw) if sleep_raw not in (None, "") else None
+                    acts = [
+                        RecoveryActivity(activity_type=a["activity_type"], minutes=int(a["minutes"] or 0))
+                        for a in recovery_activities
+                    ]
+                    if sleep is None and not acts:
+                        ui.notify("Add sleep hours or a recovery activity first", color="warning")
+                        return
+                    # Recovery is tracked per-day; stamp at noon on the chosen date.
+                    logged = datetime.fromisoformat(f"{recovery_state['date']}T12:00:00")
+                    rec = RecoveryLog(
+                        user_id=current_user_id,
+                        logged_at=logged,
+                        sleep_hours=sleep,
+                        activities=acts,
+                        notes=recovery_state["notes"] or None,
+                    )
+                    try:
+                        save_user_recovery(current_user_id, rec)
+                    except RecoveryAccessDenied:
+                        ui.notify("Cannot save — recovery belongs to another user", color="negative")
+                        return
+                    ui.notify("Saved", color="positive")
+                    reset_recovery_form()
+                    stats_panel.refresh()
+                    recovery_recent.refresh()
+                    # Land back on Home so the updated recovery score greets the user.
+                    tabs.set_value("Home")
+
+                def reset_recovery_form() -> None:
+                    recovery_state["date"] = date.today().isoformat()
+                    recovery_state["sleep_hours"] = None
+                    recovery_state["notes"] = ""
+                    recovery_form.refresh()
+
+                def on_delete_recovery(recovery_id: str):
+                    with ui.dialog() as dialog, ui.card().style(f"background-color: {SURFACE}; color: {TEXT}"):
+                        ui.label("Delete this recovery log?").classes("text-lg")
+                        ui.label("This cannot be undone.").style(f"color: {MUTED}").classes("text-sm")
+                        def confirm():
+                            try:
+                                delete_user_recovery(current_user_id, recovery_id)
+                            except (RecoveryNotFound, RecoveryAccessDenied):
+                                dialog.close()
+                                ui.notify("Could not delete recovery log", color="negative")
+                                return
+                            dialog.close()
+                            ui.notify("Deleted", color="warning")
+                            stats_panel.refresh()
+                            recovery_recent.refresh()
+                        with ui.row().classes("justify-end gap-2 w-full"):
+                            ui.button("Cancel", on_click=dialog.close).props("flat")
+                            ui.button("Delete", on_click=confirm).props("color=negative unelevated")
+                    dialog.open()
+
+                @ui.refreshable
+                def recovery_recent() -> None:
+                    end = datetime.now()
+                    try:
+                        logs = list_user_recovery(current_user_id, end - timedelta(days=30), end)
+                    except Exception as exc:
+                        ui.label(f"Could not load: {exc}").style(f"color: {MUTED}")
+                        return
+                    if not logs:
+                        with ui.column().classes("empty-state w-full items-center gap-2"):
+                            ui.icon("spa").style(f"color: {MUTED}; font-size: 2.5rem;")
+                            ui.label("No recovery logged yet.").classes("text-sm")
+                        return
+                    for s in reversed(logs):
+                        with ui.card().classes("w-full p-4 gap-2").style(f"background-color: {SURFACE}"):
+                            with ui.row().classes("w-full items-center gap-3 no-wrap"):
+                                with ui.element("div").classes("icon-tile").style("width:42px;height:42px;"):
+                                    ui.icon("bedtime").style(f"color: {RECOVERY}; font-size: 1.3rem;")
+                                with ui.column().classes("gap-0 flex-grow"):
+                                    ui.label(s.logged_at.strftime("%a %b %d").upper()) \
+                                        .classes("s-label").style("letter-spacing: 0.05em;")
+                                    bits = []
+                                    if s.sleep_hours:
+                                        bits.append(f"{round(s.sleep_hours, 1)}h sleep")
+                                    for a in s.activities:
+                                        lbl = RECOVERY_ACTIVITY_LABELS.get(a.activity_type, a.activity_type)
+                                        bits.append(f"{lbl} {a.minutes}min" if a.minutes else lbl)
+                                    ui.label(" · ".join(bits) or "—").classes("text-sm").style(f"color: {TEXT2}")
+                                if s.sleep_hours is not None:
+                                    with ui.row().classes("items-baseline gap-1"):
+                                        ui.label(str(round(s.sleep_hours, 1))).classes("s-stat") \
+                                            .style(f"color: {SLEEP}; font-size: 1.2rem; font-weight: 800;")
+                                        ui.label("h").style(f"color: {MUTED}; font-size: 0.7rem; font-weight: 600;")
+                                ui.button(icon="delete_outline", on_click=lambda rid=s.id: on_delete_recovery(rid)) \
+                                    .props("flat dense round size=sm").style(f"color: {MUTED}")
+                            if s.notes:
+                                ui.label(f"note: {s.notes}").classes("text-xs italic") \
+                                    .style(f"color: {MUTED}")
+
+                # Render in visual order: form, then the recent-recovery list.
+                recovery_form()
+                ui.label("Recent recovery").classes("s-label mt-4")
+                recovery_recent()
 
         # ============= HISTORY =============
         with ui.tab_panel(tab_history).classes("p-0"):

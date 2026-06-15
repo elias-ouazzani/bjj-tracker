@@ -11,6 +11,8 @@ from models import (
     GrapplingData,
     LogEntry,
     MmaData,
+    RecoveryActivity,
+    RecoveryLog,
     Session,
     StrikingData,
     Tag,
@@ -225,3 +227,56 @@ class TestSessionDiscriminator:
         as_json = s.model_dump_json()
         revived = Session.model_validate_json(as_json)
         assert revived == s
+
+
+# ---------------- Recovery ----------------
+
+class TestRecoveryActivity:
+    def test_valid(self):
+        a = RecoveryActivity(activity_type="sauna", minutes=20)
+        assert a.activity_type == "sauna"
+        assert a.minutes == 20
+
+    def test_minutes_default_zero(self):
+        a = RecoveryActivity(activity_type="massage")
+        assert a.minutes == 0
+
+    def test_invalid_activity_type(self):
+        with pytest.raises(ValidationError):
+            RecoveryActivity(activity_type="yoga")
+
+
+class TestRecoveryLog:
+    def test_minimal_sleep_only(self):
+        r = RecoveryLog(user_id="u1", logged_at=datetime(2026, 6, 15, 12), sleep_hours=8)
+        assert r.sleep_hours == 8
+        assert r.activities == []
+        assert r.id is None  # not yet saved
+
+    def test_activity_only_no_sleep(self):
+        r = RecoveryLog(
+            user_id="u1",
+            logged_at=datetime(2026, 6, 15, 12),
+            activities=[RecoveryActivity(activity_type="ice_bath", minutes=10)],
+        )
+        assert r.sleep_hours is None
+        assert r.activities[0].activity_type == "ice_bath"
+
+    def test_user_id_required(self):
+        with pytest.raises(ValidationError):
+            RecoveryLog(logged_at=datetime(2026, 6, 15, 12), sleep_hours=8)
+
+    def test_json_round_trip(self):
+        r = RecoveryLog(
+            id="r1",
+            user_id="u1",
+            logged_at=datetime(2026, 6, 15, 12),
+            sleep_hours=7.5,
+            activities=[
+                RecoveryActivity(activity_type="sauna", minutes=15),
+                RecoveryActivity(activity_type="stretching", minutes=10),
+            ],
+            notes="felt good",
+        )
+        revived = RecoveryLog.model_validate_json(r.model_dump_json())
+        assert revived == r
