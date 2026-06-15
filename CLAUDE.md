@@ -14,9 +14,11 @@ Personal BJJ training session log. Built with NiceGUI + Firestore + Pydantic AI.
 ## Project structure
 ```
 bjj-tracker/
-├── main.py        # NiceGUI app + all UI pages
-├── models.py      # Pydantic models (Session, WeeklyScore)
-├── db.py          # Firestore read/write functions
+├── main.py        # NiceGUI app + all UI pages (Home / Log / Recovery / History)
+├── models.py      # Pydantic models (Session discriminated union + RecoveryLog)
+├── db.py          # Firestore read/write (sessions + recovery_logs collections)
+├── charts.py      # Pure aggregation: training stats + recovery score formula
+├── services/      # Ownership-enforcing layer (sessions.py, recovery.py)
 ├── ai.py          # Pydantic AI training tip generation
 ├── tests/
 │   ├── test_models.py

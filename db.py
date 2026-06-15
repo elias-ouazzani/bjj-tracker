@@ -20,11 +20,12 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import Session
+from models import RecoveryLog, Session
 
 log = logging.getLogger("strain.db")
 
 SESSIONS_COLLECTION = "sessions"
+RECOVERY_COLLECTION = "recovery_logs"
 
 
 @lru_cache(maxsize=1)
@@ -88,3 +89,49 @@ def list_sessions(user_id: str, start: datetime, end: datetime) -> list[Session]
     sessions = [Session(**doc.to_dict()) for doc in query.stream()]
     sessions.sort(key=lambda s: s.started_at)
     return [s for s in sessions if start <= s.started_at <= end]
+
+
+# ---------------------------------------------------------------------
+# Recovery logs — same storage pattern as sessions, separate collection.
+# ---------------------------------------------------------------------
+
+def save_recovery(recovery: RecoveryLog) -> RecoveryLog:
+    """Upsert a RecoveryLog. Mirrors save_session: new logs (id=None) get a
+    Firestore-generated ID returned on the copy; existing logs overwrite."""
+    if recovery.id is None:
+        doc_ref = _client().collection(RECOVERY_COLLECTION).document()  # auto-gen ID
+        recovery = recovery.model_copy(update={"id": doc_ref.id})
+        log.debug("db.save_recovery create id=%s user=%s", recovery.id, recovery.user_id)
+    else:
+        doc_ref = _client().collection(RECOVERY_COLLECTION).document(recovery.id)
+        log.debug("db.save_recovery update id=%s user=%s", recovery.id, recovery.user_id)
+    doc_ref.set(recovery.model_dump(mode="json"))
+    return recovery
+
+
+def get_recovery(recovery_id: str) -> RecoveryLog | None:
+    """Fetch one recovery log by ID. Returns None if not found."""
+    snap = _client().collection(RECOVERY_COLLECTION).document(recovery_id).get()
+    if not snap.exists:
+        return None
+    return RecoveryLog(**snap.to_dict())
+
+
+def delete_recovery(recovery_id: str) -> None:
+    """Delete a recovery log by ID. Idempotent — no-op if not found."""
+    _client().collection(RECOVERY_COLLECTION).document(recovery_id).delete()
+    log.debug("db.delete_recovery id=%s", recovery_id)
+
+
+def list_recovery(user_id: str, start: datetime, end: datetime) -> list[RecoveryLog]:
+    """All recovery logs for `user_id` with `start <= logged_at <= end`,
+    sorted by logged_at ascending. Date range filtered in Python (same
+    rationale as list_sessions — no composite index needed)."""
+    query = (
+        _client()
+        .collection(RECOVERY_COLLECTION)
+        .where(filter=FieldFilter("user_id", "==", user_id))
+    )
+    logs = [RecoveryLog(**doc.to_dict()) for doc in query.stream()]
+    logs.sort(key=lambda r: r.logged_at)
+    return [r for r in logs if start <= r.logged_at <= end]
