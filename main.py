@@ -29,6 +29,7 @@ log = logging.getLogger("strain.main")
 
 from ai import extract_tags
 from auth import verify_id_token
+from coach import build_coach_context, coach_reply
 from charts import (
     current_streak,
     discipline_totals,
@@ -822,6 +823,7 @@ def index(request: Request) -> None:
         tab_log = ui.tab("Log", icon="add_circle")
         tab_recovery = ui.tab("Recovery", icon="spa")
         tab_history = ui.tab("History", icon="history")
+        tab_coach = ui.tab("Coach", icon="forum")
 
     # Bottom bar mirrors the tabs; CSS swaps which one is visible per screen
     # size. Re-rendered on every tab change so the active item highlights.
@@ -835,6 +837,7 @@ def index(request: Request) -> None:
                 ("Log", "add_circle", "Log"),
                 ("Recovery", "spa", "Recovery"),
                 ("History", "history", "History"),
+                ("Coach", "forum", "Coach"),
             ):
                 active = current_tab["value"] == name
                 color = TEXT if active else FAINT
@@ -1668,6 +1671,96 @@ def index(request: Request) -> None:
                                     .style(f"color: {MUTED}")
 
                 history_container()
+
+        # ============= COACH =============
+        with ui.tab_panel(tab_coach).classes("p-0"):
+            with ui.column().classes("page-content w-full gap-3 p-6"):
+                with ui.column().classes("gap-1"):
+                    ui.label("Coach").classes("s-stat text-3xl").style(f"color: {TEXT}")
+                    ui.label("Ask about your training & recovery").classes("s-label")
+
+                # Conversation memory across turns: Pydantic AI message objects
+                # returned by coach_reply, fed back in as history next turn.
+                chat_state: dict = {"messages": None, "busy": False}
+
+                chat_scroll = ui.scroll_area().classes("w-full").style(
+                    f"height: 58vh; background-color: {BG}; border-radius: 12px;"
+                )
+                with chat_scroll:
+                    messages_col = ui.column().classes("w-full gap-3 p-1")
+
+                def add_bubble(text: str, *, me: bool) -> None:
+                    with messages_col:
+                        with ui.row().classes("w-full " + ("justify-end" if me else "justify-start")):
+                            with ui.element("div").style(
+                                f"background:{ACCENT if me else SURFACE}; "
+                                f"border-radius:14px; padding:10px 14px; max-width:82%;"
+                            ):
+                                if me:
+                                    ui.label(text).style(
+                                        "color:#FFFFFF; white-space:pre-wrap; line-height:1.45;"
+                                    )
+                                else:
+                                    ui.markdown(text).style(f"color:{TEXT};")
+                    chat_scroll.scroll_to(percent=1.0)
+
+                add_bubble(
+                    "Hi! I'm your coach. Ask me about your training load, recovery, "
+                    "what to focus on, or how to plan your week.",
+                    me=False,
+                )
+
+                async def on_send() -> None:
+                    msg = (chat_input.value or "").strip()
+                    if not msg or chat_state["busy"]:
+                        return
+                    chat_state["busy"] = True
+                    chat_input.value = ""
+                    add_bubble(msg, me=True)
+
+                    with messages_col:
+                        with ui.row().classes("w-full justify-start") as thinking:
+                            with ui.element("div").style(
+                                f"background:{SURFACE}; border-radius:14px; padding:10px 14px;"
+                            ):
+                                ui.label("Coach is thinking…").style(f"color:{MUTED};")
+                    chat_scroll.scroll_to(percent=1.0)
+
+                    try:
+                        # Build the data summary once, on the first turn only.
+                        if chat_state["messages"] is None:
+                            end = datetime.now()
+                            sessions = list_user_sessions(current_user_id, end - timedelta(days=30), end)
+                            try:
+                                rlogs = list_user_recovery(current_user_id, end - timedelta(days=30), end)
+                            except Exception:
+                                rlogs = []
+                            context = build_coach_context(sessions, rlogs)
+                        else:
+                            context = ""
+                        reply, new_messages = await asyncio.to_thread(
+                            coach_reply, msg, chat_state["messages"], context
+                        )
+                        chat_state["messages"] = new_messages
+                        thinking.delete()
+                        add_bubble(reply or "(no reply)", me=False)
+                    except Exception:
+                        log.exception("coach reply failed uid=%s", current_user_id)
+                        thinking.delete()
+                        add_bubble(
+                            "Sorry — I couldn't reach the coach just now. Please try again.",
+                            me=False,
+                        )
+                    finally:
+                        chat_state["busy"] = False
+
+                with ui.row().classes("w-full items-center gap-2"):
+                    chat_input = ui.input(placeholder="Ask your coach…") \
+                        .props("outlined dense dark").classes("flex-grow") \
+                        .on("keydown.enter", on_send)
+                    ui.button(icon="send", on_click=on_send) \
+                        .props("round dense unelevated") \
+                        .style(f"background-color: {ACCENT}; color: #FFFFFF;")
 
 
 def _tag_pill(text: str, color: str) -> None:
