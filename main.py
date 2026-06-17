@@ -1738,12 +1738,21 @@ def index(request: Request) -> None:
                             context = build_coach_context(sessions, rlogs)
                         else:
                             context = ""
-                        reply, new_messages = await asyncio.to_thread(
-                            coach_reply, msg, chat_state["messages"], context
+                        reply, new_messages, logged = await asyncio.to_thread(
+                            coach_reply, msg, current_user_id, datetime.now(),
+                            chat_state["messages"], context,
                         )
                         chat_state["messages"] = new_messages
                         thinking.delete()
                         add_bubble(reply or "(no reply)", me=False)
+                        # If the coach logged a session via its tool, refresh the
+                        # dashboard so the new session shows up immediately.
+                        if logged:
+                            ui.notify(f"Logged {len(logged)} session(s) from chat", color="positive")
+                            stats_panel.refresh()
+                            charts_row.refresh()
+                            recent_snapshot.refresh()
+                            history_container.refresh()
                     except Exception:
                         log.exception("coach reply failed uid=%s", current_user_id)
                         thinking.delete()

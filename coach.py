@@ -8,20 +8,40 @@ differences:
   1. The output is a plain string (a chat reply), not a typed model.
   2. We feed the model a short summary of the user's recent sessions and
      recovery (see build_coach_context) so its advice is personalised.
+  3. It has a TOOL — log_session — so when the user says "log my kickboxing
+     session, 60 min, switch kick drills" the model calls it and we actually
+     save a Session (tool / function calling).
 
 Flow per message:
-    user text ─► coach_reply(message, history, context)
+    user text ─► coach_reply(message, user_id, now, history, context)
                      │  prepends the data summary on the first turn
                      ▼
-              Agent.run_sync(...)  ─►  Anthropic API  ─►  reply text
+              Agent.run_sync(...)  ─►  Anthropic API
+                     │                   │  may call log_session(...) ─► save_user_session
+                     ▼                   ▼
+                 reply text          (session saved)
 """
 
 from __future__ import annotations
 
-from pydantic_ai import Agent
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from pydantic_ai import Agent, RunContext
 
 from charts import current_streak, total_minutes, weekly_recovery_score
-from models import RecoveryLog, Session
+from models import (
+    CardioData,
+    GrapplingData,
+    MmaData,
+    RecoveryLog,
+    Session,
+    StrikingData,
+    WeightsData,
+)
+from services.sessions import save_user_session
+
+DISCIPLINES = ("bjj", "wrestling", "mma", "boxing", "kickboxing", "cardio", "weights")
 
 _SYSTEM_PROMPT = """You are an experienced strength, conditioning, and martial
 arts coach built into a training-tracker app called Strain.
@@ -37,7 +57,35 @@ Guidelines:
 - You are not a doctor. For pain or possible injury, suggest seeing a
   professional rather than diagnosing.
 - If they have little or no data yet, encourage them to log a few sessions.
+
+Logging sessions:
+- When the user asks you to log / record / add / save a session, call the
+  `log_session` tool. Map their words to one discipline of: bjj, wrestling,
+  mma, boxing, kickboxing, cardio, weights. Pass the total training minutes
+  and put what they worked on in `notes`.
+- The current date and time is given at the top of each message. For "today"
+  or "tonight" you can omit `when_iso` (it defaults to now). For another day,
+  work out the ISO datetime from the current date and pass it as `when_iso`.
+- After logging, confirm in one short sentence what you saved.
+- Only log when they clearly ask you to — don't log just because they mention
+  a workout.
+- You CANNOT delete or edit sessions. If asked, tell them to use the History
+  tab to delete a session themselves.
 """
+
+
+@dataclass
+class CoachDeps:
+    """Per-conversation data the coach's tools need.
+
+    `user_id` ties any logged session to the right owner; `now` lets the tool
+    default the time; `logged` collects the IDs of sessions the tool created
+    this turn, so the UI knows to refresh after a chat-driven log."""
+
+    user_id: str
+    now: datetime
+    logged: list = field(default_factory=list)
+
 
 _agent: Agent | None = None
 
@@ -54,9 +102,69 @@ def _get_agent() -> Agent:
     if _agent is None:
         _agent = Agent(
             "anthropic:claude-sonnet-4-6",
+            deps_type=CoachDeps,
             system_prompt=_SYSTEM_PROMPT,
+            tools=[_log_session_tool],
         )
     return _agent
+
+
+def _build_session_data(discipline: str, minutes: int):
+    """Build the right discipline-specific data object, putting the stated
+    total minutes into the field that `total_minutes` counts 1:1, so the
+    session's total comes out equal to `minutes`."""
+    if discipline in ("bjj", "wrestling"):
+        return GrapplingData(discipline=discipline, drilling_minutes=minutes)
+    if discipline == "mma":
+        return MmaData(discipline="mma", drilling_minutes=minutes)
+    if discipline in ("boxing", "kickboxing"):
+        return StrikingData(discipline=discipline, bag_minutes=minutes)
+    if discipline == "cardio":
+        return CardioData(discipline="cardio", activity_type="session", duration_minutes=minutes)
+    if discipline == "weights":
+        return WeightsData(discipline="weights", duration_minutes=minutes)
+    raise ValueError(f"Unknown discipline: {discipline}")
+
+
+def _log_session_tool(
+    ctx: RunContext[CoachDeps],
+    discipline: str,
+    minutes: int,
+    notes: str = "",
+    when_iso: str | None = None,
+) -> str:
+    """Log a training session for the athlete and save it.
+
+    Args:
+        discipline: one of bjj, wrestling, mma, boxing, kickboxing, cardio, weights.
+        minutes: total training time for the session, in minutes.
+        notes: short description of what they worked on (optional).
+        when_iso: ISO datetime like "2026-06-16T19:00". Omit for now/today/tonight.
+
+    Returns a short confirmation the coach can relay to the user.
+    """
+    disc = discipline.lower().strip()
+    if disc not in DISCIPLINES:
+        return f"Couldn't log — '{discipline}' isn't a known discipline."
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        return "Couldn't log — minutes must be a number."
+
+    try:
+        when = datetime.fromisoformat(when_iso) if when_iso else ctx.deps.now
+    except ValueError:
+        when = ctx.deps.now
+
+    session = Session(
+        user_id=ctx.deps.user_id,
+        started_at=when,
+        notes=notes or None,
+        data=_build_session_data(disc, minutes),
+    )
+    saved = save_user_session(ctx.deps.user_id, session)
+    ctx.deps.logged.append(saved.id)
+    return f"Logged a {minutes}-minute {disc} session for {when:%b %d}."
 
 
 def build_coach_context(sessions: list[Session], recovery_logs: list[RecoveryLog]) -> str:
@@ -121,28 +229,33 @@ def build_coach_context(sessions: list[Session], recovery_logs: list[RecoveryLog
     return "\n".join(lines)
 
 
-def coach_reply(message: str, history=None, context: str = ""):
+def coach_reply(message: str, user_id: str, now: datetime, history=None, context: str = ""):
     """Generate the coach's reply to one user `message`.
 
-    Returns a `(reply_text, messages)` tuple:
+    Returns a `(reply_text, messages, logged_ids)` tuple:
     - `reply_text` is the string to show in the chat.
     - `messages` is the full Pydantic AI conversation so far; the caller keeps
       it and passes it back as `history` next turn, so the coach remembers
       earlier questions.
+    - `logged_ids` is the IDs of any sessions the coach logged this turn (via
+      the log_session tool), so the UI can refresh stats. Empty if none.
 
+    - `user_id` / `now`: passed to the tool via deps so a logged session is
+      owned correctly and timed sensibly.
     - `context`: the summary from build_coach_context. We prepend it only on
-      the FIRST turn (when there's no history yet); after that the model
-      already has it in the conversation, so re-sending would waste tokens.
+      the FIRST turn; after that the model already has it in the conversation.
 
     Empty input short-circuits — no API call (and no charge) for a blank send.
     """
     if not message.strip():
-        return "", history or []
+        return "", history or [], []
 
+    stamp = f"(Current date & time: {now:%A %Y-%m-%d %H:%M})"
     if context and not history:
-        prompt = f"Here is my recent training data:\n\n{context}\n\nMy question: {message}"
+        prompt = f"{stamp}\nHere is my recent training data:\n\n{context}\n\nMy question: {message}"
     else:
-        prompt = message
+        prompt = f"{stamp}\n{message}"
 
-    result = _get_agent().run_sync(prompt, message_history=history)
-    return result.output, result.all_messages()
+    deps = CoachDeps(user_id=user_id, now=now)
+    result = _get_agent().run_sync(prompt, message_history=history, deps=deps)
+    return result.output, result.all_messages(), deps.logged
