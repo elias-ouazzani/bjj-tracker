@@ -1738,7 +1738,7 @@ def index(request: Request) -> None:
                             context = build_coach_context(sessions, rlogs)
                         else:
                             context = ""
-                        reply, new_messages, logged = await asyncio.to_thread(
+                        reply, new_messages, logged, logged_recovery = await asyncio.to_thread(
                             coach_reply, msg, current_user_id, datetime.now(),
                             chat_state["messages"], context,
                         )
@@ -1753,6 +1753,12 @@ def index(request: Request) -> None:
                             charts_row.refresh()
                             recent_snapshot.refresh()
                             history_container.refresh()
+                        # If the coach logged recovery, refresh the recovery views
+                        # and the Home recovery score (which lives in stats_panel).
+                        if logged_recovery:
+                            ui.notify(f"Logged {len(logged_recovery)} recovery entr(ies) from chat", color="positive")
+                            stats_panel.refresh()
+                            recovery_recent.refresh()
                     except Exception:
                         log.exception("coach reply failed uid=%s", current_user_id)
                         thinking.delete()

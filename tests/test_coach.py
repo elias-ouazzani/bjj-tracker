@@ -12,6 +12,7 @@ import coach
 from models import (
     CardioData,
     GrapplingData,
+    RecoveryActivity,
     RecoveryLog,
     Session,
     StrikingData,
@@ -68,8 +69,8 @@ class TestBuildCoachContext:
 # ---------------- coach_reply ----------------
 
 def test_coach_reply_empty_returns_empty():
-    assert coach.coach_reply("", "u", NOW) == ("", [], [])
-    assert coach.coach_reply("   \n ", "u", NOW) == ("", [], [])
+    assert coach.coach_reply("", "u", NOW) == ("", [], [], [])
+    assert coach.coach_reply("   \n ", "u", NOW) == ("", [], [], [])
 
 
 def test_coach_reply_prepends_context_on_first_turn(monkeypatch):
@@ -80,12 +81,13 @@ def test_coach_reply_prepends_context_on_first_turn(monkeypatch):
     fake_agent.run_sync.return_value = fake_result
     monkeypatch.setattr(coach, "_agent", fake_agent)
 
-    out, messages, logged = coach.coach_reply(
+    out, messages, logged, logged_recovery = coach.coach_reply(
         "How am I doing?", "u", NOW, history=None, context="6 sessions"
     )
     assert out == "Train hard, sleep more."
     assert messages == ["m1", "m2"]            # returned for the next turn
     assert logged == []                         # nothing logged this turn
+    assert logged_recovery == []                # no recovery logged this turn
     sent_prompt = fake_agent.run_sync.call_args[0][0]
     assert "6 sessions" in sent_prompt          # context was prepended
     assert "How am I doing?" in sent_prompt
@@ -99,7 +101,7 @@ def test_coach_reply_skips_context_when_history_exists(monkeypatch):
     fake_agent.run_sync.return_value = fake_result
     monkeypatch.setattr(coach, "_agent", fake_agent)
 
-    out, messages, logged = coach.coach_reply(
+    out, messages, logged, logged_recovery = coach.coach_reply(
         "and tomorrow?", "u", NOW, history=["prior"], context="6 sessions"
     )
     assert out == "ok"
@@ -174,6 +176,52 @@ def test_log_session_tool_uses_when_iso(monkeypatch):
 
     coach._log_session_tool(ctx, "cardio", 30, when_iso="2026-06-10T07:30")
     assert captured["session"].started_at == datetime(2026, 6, 10, 7, 30)
+
+
+# ---------------- _log_recovery_tool ----------------
+
+def test_log_recovery_tool_saves_sleep_and_activities(monkeypatch):
+    captured = {}
+    def fake_save(uid, rec):
+        captured["uid"] = uid
+        captured["rec"] = rec
+        return rec.model_copy(update={"id": "rec-1"})
+    monkeypatch.setattr(coach, "save_user_recovery", fake_save)
+
+    ctx = SimpleNamespace(deps=coach.CoachDeps(user_id="u1", now=NOW))
+    out = coach._log_recovery_tool(
+        ctx, sleep_hours=7.5,
+        activities=[RecoveryActivity(activity_type="sauna", minutes=15)],
+    )
+
+    rec = captured["rec"]
+    assert captured["uid"] == "u1"
+    assert rec.user_id == "u1"
+    assert rec.sleep_hours == 7.5
+    assert rec.activities[0].activity_type == "sauna"
+    assert rec.logged_at == NOW.replace(hour=12, minute=0)   # stamped at noon
+    assert ctx.deps.logged_recovery == ["rec-1"]             # recorded for UI refresh
+    assert "7.5h sleep" in out and "sauna" in out
+
+
+def test_log_recovery_tool_requires_something(monkeypatch):
+    save = MagicMock()
+    monkeypatch.setattr(coach, "save_user_recovery", save)
+    ctx = SimpleNamespace(deps=coach.CoachDeps(user_id="u1", now=NOW))
+
+    out = coach._log_recovery_tool(ctx)                       # no sleep, no activities
+    assert "sleep hours or at least one activity" in out
+    save.assert_not_called()
+
+
+def test_log_recovery_tool_uses_when_iso_at_noon(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(coach, "save_user_recovery",
+                        lambda uid, r: (captured.update(rec=r), r.model_copy(update={"id": "x"}))[1])
+    ctx = SimpleNamespace(deps=coach.CoachDeps(user_id="u1", now=NOW))
+
+    coach._log_recovery_tool(ctx, sleep_hours=8, when_iso="2026-06-10")
+    assert captured["rec"].logged_at == datetime(2026, 6, 10, 12, 0)
 
 
 def test_get_agent_lazy_construction_and_cache(monkeypatch):

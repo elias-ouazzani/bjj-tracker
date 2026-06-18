@@ -34,14 +34,17 @@ from models import (
     CardioData,
     GrapplingData,
     MmaData,
+    RecoveryActivity,
     RecoveryLog,
     Session,
     StrikingData,
     WeightsData,
 )
+from services.recovery import save_user_recovery
 from services.sessions import save_user_session
 
 DISCIPLINES = ("bjj", "wrestling", "mma", "boxing", "kickboxing", "cardio", "weights")
+RECOVERY_ACTIVITIES = ("sauna", "massage", "ice_bath", "stretching")
 
 _SYSTEM_PROMPT = """You are an experienced strength, conditioning, and martial
 arts coach built into a training-tracker app called Strain.
@@ -71,6 +74,20 @@ Logging sessions:
   a workout.
 - You CANNOT delete or edit sessions. If asked, tell them to use the History
   tab to delete a session themselves.
+
+Logging recovery:
+- When the user tells you how they slept or recovered (e.g. "slept 7.5 hours
+  and did 15 min sauna", "log 8 hours sleep"), call the `log_recovery` tool.
+- Pass `sleep_hours` as hours in bed (a number, may have a decimal). Put any
+  active-recovery blocks in `activities` — each is {activity_type, minutes}
+  where activity_type is one of: sauna, massage, ice_bath, stretching.
+- You must pass at least sleep_hours OR one activity. If they only mention one,
+  pass just that.
+- Recovery is tracked per DAY. For "last night" / "today" omit `when_iso`; for
+  another day work out the date and pass it as `when_iso`.
+- After logging, confirm in one short sentence what you saved.
+- Only log when they clearly ask you to. You CANNOT delete or edit recovery
+  logs — point them at the Recovery tab for that.
 """
 
 
@@ -78,13 +95,15 @@ Logging sessions:
 class CoachDeps:
     """Per-conversation data the coach's tools need.
 
-    `user_id` ties any logged session to the right owner; `now` lets the tool
-    default the time; `logged` collects the IDs of sessions the tool created
-    this turn, so the UI knows to refresh after a chat-driven log."""
+    `user_id` ties any logged session/recovery to the right owner; `now` lets
+    the tools default the time; `logged` collects the IDs of sessions and
+    `logged_recovery` the IDs of recovery logs created this turn, so the UI
+    knows which parts of the dashboard to refresh after a chat-driven log."""
 
     user_id: str
     now: datetime
     logged: list = field(default_factory=list)
+    logged_recovery: list = field(default_factory=list)
 
 
 _agent: Agent | None = None
@@ -104,7 +123,7 @@ def _get_agent() -> Agent:
             "anthropic:claude-sonnet-4-6",
             deps_type=CoachDeps,
             system_prompt=_SYSTEM_PROMPT,
-            tools=[_log_session_tool],
+            tools=[_log_session_tool, _log_recovery_tool],
         )
     return _agent
 
@@ -165,6 +184,60 @@ def _log_session_tool(
     saved = save_user_session(ctx.deps.user_id, session)
     ctx.deps.logged.append(saved.id)
     return f"Logged a {minutes}-minute {disc} session for {when:%b %d}."
+
+
+def _log_recovery_tool(
+    ctx: RunContext[CoachDeps],
+    sleep_hours: float | None = None,
+    activities: list[RecoveryActivity] | None = None,
+    notes: str = "",
+    when_iso: str | None = None,
+) -> str:
+    """Log a day's recovery for the athlete: sleep and/or active-recovery blocks.
+
+    Args:
+        sleep_hours: hours in bed for the night (optional, may be a decimal).
+        activities: active-recovery blocks, each {activity_type, minutes} where
+            activity_type is one of: sauna, massage, ice_bath, stretching.
+        notes: short free-text note (optional).
+        when_iso: ISO date/datetime for the DAY this recovery is for, e.g.
+            "2026-06-16". Omit for last night / today.
+
+    Returns a short confirmation the coach can relay to the user.
+    """
+    acts = activities or []
+    if sleep_hours is None and not acts:
+        return "Couldn't log recovery — give sleep hours or at least one activity."
+
+    if sleep_hours is not None:
+        try:
+            sleep_hours = float(sleep_hours)
+        except (TypeError, ValueError):
+            return "Couldn't log recovery — sleep hours must be a number."
+
+    # Recovery is tracked per day; stamp at noon like the Recovery tab does.
+    try:
+        when = datetime.fromisoformat(when_iso) if when_iso else ctx.deps.now
+    except ValueError:
+        when = ctx.deps.now
+    when = when.replace(hour=12, minute=0, second=0, microsecond=0)
+
+    rec = RecoveryLog(
+        user_id=ctx.deps.user_id,
+        logged_at=when,
+        sleep_hours=sleep_hours,
+        activities=acts,
+        notes=notes or None,
+    )
+    saved = save_user_recovery(ctx.deps.user_id, rec)
+    ctx.deps.logged_recovery.append(saved.id)
+
+    bits = []
+    if sleep_hours is not None:
+        bits.append(f"{sleep_hours:g}h sleep")
+    if acts:
+        bits.append(", ".join(f"{a.minutes}min {a.activity_type}" for a in acts))
+    return f"Logged recovery for {when:%b %d}: {'; '.join(bits)}."
 
 
 def build_coach_context(sessions: list[Session], recovery_logs: list[RecoveryLog]) -> str:
@@ -232,13 +305,16 @@ def build_coach_context(sessions: list[Session], recovery_logs: list[RecoveryLog
 def coach_reply(message: str, user_id: str, now: datetime, history=None, context: str = ""):
     """Generate the coach's reply to one user `message`.
 
-    Returns a `(reply_text, messages, logged_ids)` tuple:
+    Returns a `(reply_text, messages, logged_ids, logged_recovery_ids)` tuple:
     - `reply_text` is the string to show in the chat.
     - `messages` is the full Pydantic AI conversation so far; the caller keeps
       it and passes it back as `history` next turn, so the coach remembers
       earlier questions.
     - `logged_ids` is the IDs of any sessions the coach logged this turn (via
-      the log_session tool), so the UI can refresh stats. Empty if none.
+      the log_session tool), so the UI can refresh training stats. Empty if none.
+    - `logged_recovery_ids` is the IDs of any recovery logs the coach logged
+      this turn (via the log_recovery tool), so the UI can refresh the recovery
+      views and Home score. Empty if none.
 
     - `user_id` / `now`: passed to the tool via deps so a logged session is
       owned correctly and timed sensibly.
@@ -248,7 +324,7 @@ def coach_reply(message: str, user_id: str, now: datetime, history=None, context
     Empty input short-circuits — no API call (and no charge) for a blank send.
     """
     if not message.strip():
-        return "", history or [], []
+        return "", history or [], [], []
 
     stamp = f"(Current date & time: {now:%A %Y-%m-%d %H:%M})"
     if context and not history:
@@ -258,4 +334,4 @@ def coach_reply(message: str, user_id: str, now: datetime, history=None, context
 
     deps = CoachDeps(user_id=user_id, now=now)
     result = _get_agent().run_sync(prompt, message_history=history, deps=deps)
-    return result.output, result.all_messages(), deps.logged
+    return result.output, result.all_messages(), deps.logged, deps.logged_recovery
