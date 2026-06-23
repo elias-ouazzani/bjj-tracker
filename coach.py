@@ -25,11 +25,14 @@ Flow per message:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
+import httpx
 from pydantic_ai import Agent, RunContext
 
 from charts import current_streak, total_minutes, weekly_recovery_score
+from gcal import create_event, list_events
 from models import (
     CardioData,
     GrapplingData,
@@ -45,6 +48,10 @@ from services.sessions import save_user_session
 
 DISCIPLINES = ("bjj", "wrestling", "mma", "boxing", "kickboxing", "cardio", "weights")
 RECOVERY_ACTIVITIES = ("sauna", "massage", "ice_bath", "stretching")
+
+# Timezone used to anchor calendar events. The app has no per-user locale yet,
+# so we default to the deployment region. TODO: derive this from the user.
+COACH_TZ = "Europe/Brussels"
 
 _SYSTEM_PROMPT = """You are an experienced strength, conditioning, and martial
 arts coach built into a training-tracker app called Strain.
@@ -88,6 +95,22 @@ Logging recovery:
 - After logging, confirm in one short sentence what you saved.
 - Only log when they clearly ask you to. You CANNOT delete or edit recovery
   logs — point them at the Recovery tab for that.
+
+Calendar / planning future training:
+- The calendar is the PLANNING layer and is SEPARATE from logged sessions and
+  stats. Scheduling training does NOT change their training numbers — only
+  logging does.
+- To schedule future training ("put BJJ on Tuesday 6pm", "plan 3 sessions this
+  week"), call `schedule_training` with the discipline and an ISO start time.
+  Work out the date from the current date & time at the top of the message.
+- To answer "what's planned" / "what's on my calendar", call
+  `list_planned_sessions`.
+- To LOG a session that's on the calendar ("log my session from today that's on
+  my calendar"), FIRST call `list_planned_sessions` for that day to find it,
+  THEN call `log_session` with the discipline and minutes from that event.
+  Remember: scheduling is a plan; logging is what changes stats.
+- If a calendar tool reports it couldn't reach the calendar, relay that to the
+  user (they may need to sign in again) — don't keep retrying.
 """
 
 
@@ -102,6 +125,10 @@ class CoachDeps:
 
     user_id: str
     now: datetime
+    # Google OAuth access token for Calendar (Phase 1). None if the user didn't
+    # grant the scope; the calendar tools degrade gracefully when it's missing.
+    access_token: str | None = None
+    time_zone: str = COACH_TZ
     logged: list = field(default_factory=list)
     logged_recovery: list = field(default_factory=list)
 
@@ -123,7 +150,12 @@ def _get_agent() -> Agent:
             "anthropic:claude-sonnet-4-6",
             deps_type=CoachDeps,
             system_prompt=_SYSTEM_PROMPT,
-            tools=[_log_session_tool, _log_recovery_tool],
+            tools=[
+                _log_session_tool,
+                _log_recovery_tool,
+                _schedule_training_tool,
+                _list_planned_tool,
+            ],
         )
     return _agent
 
@@ -240,6 +272,107 @@ def _log_recovery_tool(
     return f"Logged recovery for {when:%b %d}: {'; '.join(bits)}."
 
 
+def _schedule_training_tool(
+    ctx: RunContext[CoachDeps],
+    discipline: str,
+    when_iso: str,
+    duration_minutes: int = 60,
+    notes: str = "",
+) -> str:
+    """Add a PLANNED training session to the athlete's Google Calendar.
+
+    This is the planning layer — it does NOT log a session or change stats.
+    Use it when the user wants to schedule future training.
+
+    Args:
+        discipline: bjj, wrestling, mma, boxing, kickboxing, cardio, weights.
+        when_iso: ISO start datetime like "2026-06-24T18:00".
+        duration_minutes: how long to block out (default 60).
+        notes: optional event description.
+
+    Returns a short confirmation the coach can relay.
+    """
+    token = ctx.deps.access_token
+    if not token:
+        return ("Couldn't reach Google Calendar — ask the user to sign out and "
+                "back in to reconnect it.")
+    tz = ZoneInfo(ctx.deps.time_zone)
+    try:
+        start = datetime.fromisoformat(when_iso)
+    except ValueError:
+        return "Couldn't schedule — I need a valid date and time."
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=tz)
+    end = start + timedelta(minutes=duration_minutes)
+
+    try:
+        create_event(
+            token,
+            summary=f"{discipline.lower()} training",
+            start=start,
+            end=end,
+            time_zone=ctx.deps.time_zone,
+            description=notes or None,
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 401:
+            return "The Google session expired — ask the user to sign in again."
+        return f"Couldn't add it to the calendar (error {exc.response.status_code})."
+    except Exception:
+        return "Something went wrong reaching Google Calendar."
+    return f"Added {discipline} to Google Calendar on {start:%a %b %d at %H:%M}."
+
+
+def _list_planned_tool(
+    ctx: RunContext[CoachDeps],
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+) -> str:
+    """List the athlete's PLANNED training from their Google Calendar.
+
+    Use this to answer "what's on my calendar", and to find an event the user
+    wants to log (call this first, then call log_session with what you find).
+
+    Args:
+        start_iso: window start ISO datetime. Omit for now.
+        end_iso: window end ISO datetime. Omit for 7 days from now.
+
+    Returns a short, human-readable list the coach can relay.
+    """
+    token = ctx.deps.access_token
+    if not token:
+        return ("Couldn't reach Google Calendar — ask the user to sign in again "
+                "to reconnect it.")
+    tz = ZoneInfo(ctx.deps.time_zone)
+    try:
+        tmin = datetime.fromisoformat(start_iso) if start_iso else ctx.deps.now
+        tmax = datetime.fromisoformat(end_iso) if end_iso else ctx.deps.now + timedelta(days=7)
+    except ValueError:
+        return "Couldn't read the calendar — I need valid dates."
+    if tmin.tzinfo is None:
+        tmin = tmin.replace(tzinfo=tz)
+    if tmax.tzinfo is None:
+        tmax = tmax.replace(tzinfo=tz)
+
+    try:
+        events = list_events(token, tmin, tmax)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 401:
+            return "The Google session expired — ask the user to sign in again."
+        return f"Couldn't read the calendar (error {exc.response.status_code})."
+    except Exception:
+        return "Something went wrong reaching Google Calendar."
+
+    if not events:
+        return "No planned sessions on the calendar in that window."
+    lines = []
+    for ev in events:
+        when = ev.start.date_time
+        stamp = f"{when:%a %b %d %H:%M}" if when else "(all day)"
+        lines.append(f"- {stamp} · {ev.summary or '(no title)'}")
+    return "Planned sessions:\n" + "\n".join(lines)
+
+
 def build_coach_context(sessions: list[Session], recovery_logs: list[RecoveryLog]) -> str:
     """Summarise the athlete's recent data into a compact plain-text block
     that gets sent to the coach so its advice is about THIS athlete.
@@ -302,7 +435,8 @@ def build_coach_context(sessions: list[Session], recovery_logs: list[RecoveryLog
     return "\n".join(lines)
 
 
-def coach_reply(message: str, user_id: str, now: datetime, history=None, context: str = ""):
+def coach_reply(message: str, user_id: str, now: datetime, history=None,
+                context: str = "", access_token: str | None = None):
     """Generate the coach's reply to one user `message`.
 
     Returns a `(reply_text, messages, logged_ids, logged_recovery_ids)` tuple:
@@ -320,6 +454,9 @@ def coach_reply(message: str, user_id: str, now: datetime, history=None, context
       owned correctly and timed sensibly.
     - `context`: the summary from build_coach_context. We prepend it only on
       the FIRST turn; after that the model already has it in the conversation.
+    - `access_token`: the Google OAuth token for Calendar (Phase 1). Passed to
+      the calendar tools via deps; None means calendar actions degrade to a
+      "please sign in again" message.
 
     Empty input short-circuits — no API call (and no charge) for a blank send.
     """
@@ -332,6 +469,6 @@ def coach_reply(message: str, user_id: str, now: datetime, history=None, context
     else:
         prompt = f"{stamp}\n{message}"
 
-    deps = CoachDeps(user_id=user_id, now=now)
+    deps = CoachDeps(user_id=user_id, now=now, access_token=access_token)
     result = _get_agent().run_sync(prompt, message_history=history, deps=deps)
     return result.output, result.all_messages(), deps.logged, deps.logged_recovery

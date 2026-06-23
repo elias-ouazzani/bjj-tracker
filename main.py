@@ -101,11 +101,18 @@ def _auth_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret, salt="strain-auth")
 
 
-def _make_auth_cookie(decoded: dict) -> str:
+def _make_auth_cookie(decoded: dict, google_access_token: str | None = None) -> str:
     return _auth_serializer().dumps({
         "uid": decoded["uid"],
         "email": decoded.get("email", ""),
         "name": decoded.get("name", decoded.get("email", "user")),
+        # Google OAuth access token for the calendar.events scope, captured at
+        # sign-in. Short-lived (~1h) and NOT refreshable here, so calendar calls
+        # start failing once it expires and the user must sign in again. The
+        # cookie is signed + httponly + HTTPS-only, but signed is NOT encrypted —
+        # in production an OAuth token belongs in encrypted server-side session
+        # storage, not a cookie. Acceptable here for a single-user learning app.
+        "gcal_token": google_access_token,
     })
 
 
@@ -186,6 +193,10 @@ def _inject_firebase_sdk() -> None:
       // Popup-only sign-in (like the auth-practice app): one path, one way.
       window.firebaseSignIn = async () => {{
         const provider = new GoogleAuthProvider();
+        // SCOPE: also ask Google for permission to manage the user's calendar
+        // events. This is what makes the consent popup say "Strain wants to
+        // manage your calendar". Without it we'd only get an identity token.
+        provider.addScope('https://www.googleapis.com/auth/calendar.events');
         try {{
           // (a) browser opens Google's account picker; Google hands back a token
           showStatus('1/4 opening Google popup…');
@@ -193,13 +204,28 @@ def _inject_firebase_sdk() -> None:
           showStatus('2/4 signed in as ' + result.user.email + ' — getting token…');
           const idToken = await result.user.getIdToken();
 
-          // (b) send the token to OUR server to verify + start the session
-          showStatus('3/4 got token (len=' + idToken.length + ') — verifying on server…');
+          // ---------------------------------------------------------------
+          // TODO (Elias): pull the Google OAuth ACCESS TOKEN out of `result`.
+          //   - `idToken` above proves WHO the user is (used for login).
+          //   - the ACCESS TOKEN is the "key card" our backend uses to call
+          //     Calendar on the user's behalf. It lives on the OAuth credential
+          //     attached to the sign-in result, NOT on result.user.
+          //   Hints (two lines):
+          //     const credential = GoogleAuthProvider.credentialFromResult(result);
+          //     const accessToken = credential ? credential.accessToken : null;
+          //   credentialFromResult() can return null — handle that, don't crash.
+          // ---------------------------------------------------------------
+          const credential = GoogleAuthProvider.credentialFromResult(result);
+          const accessToken = credential ? credential.accessToken : null;
+
+          // (b) send BOTH tokens to OUR server to verify + start the session
+          showStatus('3/4 got tokens (id len=' + idToken.length +
+                     ', access=' + (accessToken ? 'yes' : 'no') + ') — verifying…');
           const resp = await fetch('/auth/callback', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
             credentials: 'same-origin',
-            body: JSON.stringify({{ idToken }})
+            body: JSON.stringify({{ idToken, accessToken }})
           }});
           const data = await resp.json().catch(() => ({{}}));
 
@@ -261,6 +287,9 @@ async def auth_callback(request: Request):
     )
     body = await request.json()
     id_token = body.get("idToken")
+    # The Google OAuth access token for the calendar scope. May be absent if the
+    # user declined the calendar permission — login must still succeed without it.
+    google_access_token = body.get("accessToken")
     if not id_token:
         log.warning("auth/callback: request with no idToken")
         return JSONResponse({"ok": False, "error": "missing idToken"}, status_code=400)
@@ -270,12 +299,14 @@ async def auth_callback(request: Request):
         # Bad/expired token is the USER's problem, not ours -> WARNING.
         log.warning("auth/callback: token rejected: %s", exc)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=401)
-    log.info("auth/callback: verified uid=%s email=%s",
-             decoded["uid"], decoded.get("email"))
+    # NEVER log the token itself — just whether we got one (a secret in logs is a leak).
+    log.info("auth/callback: verified uid=%s email=%s gcal_token=%s",
+             decoded["uid"], decoded.get("email"),
+             "present" if google_access_token else "absent")
     response = JSONResponse({"ok": True, "uid": decoded["uid"]})
     response.set_cookie(
         AUTH_COOKIE_NAME,
-        _make_auth_cookie(decoded),
+        _make_auth_cookie(decoded, google_access_token),
         max_age=AUTH_COOKIE_MAX_AGE,
         httponly=True,
         secure=_cookie_is_secure(request),
@@ -755,6 +786,10 @@ def index(request: Request) -> None:
 
     current_user_id: str = auth_session["uid"]
     current_user_name: str = auth_session.get("name", "user")
+    # Google OAuth access token for Calendar, captured at sign-in (Phase 1).
+    # May be None (user declined the scope, or signed in before the feature
+    # existed) or expired (~1h life) — the coach's calendar tools handle both.
+    current_gcal_token: str | None = auth_session.get("gcal_token")
 
     _inject_firebase_sdk()
     _apply_theme()
@@ -1741,6 +1776,7 @@ def index(request: Request) -> None:
                         reply, new_messages, logged, logged_recovery = await asyncio.to_thread(
                             coach_reply, msg, current_user_id, datetime.now(),
                             chat_state["messages"], context,
+                            current_gcal_token,
                         )
                         chat_state["messages"] = new_messages
                         thinking.delete()
