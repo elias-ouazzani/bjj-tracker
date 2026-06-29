@@ -8,9 +8,14 @@ the model returns malformed data, Pydantic AI retries automatically.
 
 from __future__ import annotations
 
+import logging
+import time
+
 from pydantic_ai import Agent
 
 from models import Tag
+
+log = logging.getLogger("strain.ai")
 
 _SYSTEM_PROMPT = """You are an expert in Brazilian Jiu-Jitsu (BJJ) terminology.
 
@@ -56,5 +61,13 @@ def extract_tags(notes_raw: str) -> list[Tag]:
     Empty/whitespace input short-circuits to [] — no API call made.
     """
     if not notes_raw.strip():
+        log.debug("ai.extract_tags skip: empty note")
         return []
-    return _get_agent().run_sync(notes_raw).output
+    log.debug("ai.extract_tags start chars=%d", len(notes_raw))
+    t0 = time.perf_counter()
+    result = _get_agent().run_sync(notes_raw)
+    log.info(
+        "ai.extract_tags ok tags=%d ms=%.0f",
+        len(result.output), (time.perf_counter() - t0) * 1000,
+    )
+    return result.output

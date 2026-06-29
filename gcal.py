@@ -22,10 +22,14 @@ How auth works here (recap from Phase 1):
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
+
+log = logging.getLogger("strain.gcal")
 
 # Base URL for the Calendar REST API. "primary" means the signed-in user's
 # default calendar — we don't need to know its ID.
@@ -118,13 +122,20 @@ def create_event(
 
     # (3) Make the call. raise_for_status() converts a 4xx/5xx into an
     #     exception so problems surface immediately instead of silently.
+    log.debug("gcal.create_event start summary=%r tz=%s", summary, time_zone)
+    t0 = time.perf_counter()
     resp = httpx.post(_EVENTS_URL, headers=headers, json=body, timeout=10.0)
     resp.raise_for_status()
 
     # (4) Parse Google's JSON reply into our typed model. If Google's payload
     #     is missing something required (e.g. no `id`), this raises a clear
     #     pydantic ValidationError right here, at the boundary.
-    return CalendarEvent.model_validate(resp.json())
+    event = CalendarEvent.model_validate(resp.json())
+    log.info(
+        "gcal.create_event ok id=%s ms=%.0f",
+        event.id, (time.perf_counter() - t0) * 1000,
+    )
+    return event
 
 
 # =====================================================================
@@ -161,9 +172,19 @@ def list_events(
     }
 
     # (3) GET (reading, not writing), then surface any error loudly.
+    log.debug(
+        "gcal.list_events start window=%s..%s",
+        time_min.isoformat(), time_max.isoformat(),
+    )
+    t0 = time.perf_counter()
     resp = httpx.get(_EVENTS_URL, headers=headers, params=params, timeout=10.0)
     resp.raise_for_status()
 
     # (4) Google wraps the events in an "items" list. Parse each into our model.
     items = resp.json().get("items", [])
-    return [CalendarEvent.model_validate(item) for item in items]
+    events = [CalendarEvent.model_validate(item) for item in items]
+    log.info(
+        "gcal.list_events ok count=%d ms=%.0f",
+        len(events), (time.perf_counter() - t0) * 1000,
+    )
+    return events

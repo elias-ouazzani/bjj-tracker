@@ -24,6 +24,8 @@ Flow per message:
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -45,6 +47,8 @@ from models import (
 )
 from services.recovery import save_user_recovery
 from services.sessions import save_user_session
+
+log = logging.getLogger("strain.coach")
 
 DISCIPLINES = ("bjj", "wrestling", "mma", "boxing", "kickboxing", "cardio", "weights")
 RECOVERY_ACTIVITIES = ("sauna", "massage", "ice_bath", "stretching")
@@ -196,6 +200,10 @@ def _log_session_tool(
     """
     disc = discipline.lower().strip()
     if disc not in DISCIPLINES:
+        log.warning(
+            "coach.log_session rejected: unknown discipline=%r uid=%s",
+            discipline, ctx.deps.user_id,
+        )
         return f"Couldn't log — '{discipline}' isn't a known discipline."
     try:
         minutes = int(minutes)
@@ -215,6 +223,10 @@ def _log_session_tool(
     )
     saved = save_user_session(ctx.deps.user_id, session)
     ctx.deps.logged.append(saved.id)
+    log.info(
+        "coach.log_session ok uid=%s id=%s discipline=%s minutes=%d",
+        ctx.deps.user_id, saved.id, disc, minutes,
+    )
     return f"Logged a {minutes}-minute {disc} session for {when:%b %d}."
 
 
@@ -239,6 +251,9 @@ def _log_recovery_tool(
     """
     acts = activities or []
     if sleep_hours is None and not acts:
+        log.warning(
+            "coach.log_recovery rejected: nothing to log uid=%s", ctx.deps.user_id,
+        )
         return "Couldn't log recovery — give sleep hours or at least one activity."
 
     if sleep_hours is not None:
@@ -263,6 +278,10 @@ def _log_recovery_tool(
     )
     saved = save_user_recovery(ctx.deps.user_id, rec)
     ctx.deps.logged_recovery.append(saved.id)
+    log.info(
+        "coach.log_recovery ok uid=%s id=%s sleep=%s activities=%d",
+        ctx.deps.user_id, saved.id, sleep_hours, len(acts),
+    )
 
     bits = []
     if sleep_hours is not None:
@@ -294,12 +313,16 @@ def _schedule_training_tool(
     """
     token = ctx.deps.access_token
     if not token:
+        log.warning("coach.schedule_training: no calendar token uid=%s", ctx.deps.user_id)
         return ("Couldn't reach Google Calendar — ask the user to sign out and "
                 "back in to reconnect it.")
     tz = ZoneInfo(ctx.deps.time_zone)
     try:
         start = datetime.fromisoformat(when_iso)
     except ValueError:
+        log.warning(
+            "coach.schedule_training: bad datetime=%r uid=%s", when_iso, ctx.deps.user_id,
+        )
         return "Couldn't schedule — I need a valid date and time."
     if start.tzinfo is None:
         start = start.replace(tzinfo=tz)
@@ -316,10 +339,20 @@ def _schedule_training_tool(
         )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 401:
+            log.warning("coach.schedule_training: token expired (401) uid=%s", ctx.deps.user_id)
             return "The Google session expired — ask the user to sign in again."
+        log.warning(
+            "coach.schedule_training: calendar error %s uid=%s",
+            exc.response.status_code, ctx.deps.user_id,
+        )
         return f"Couldn't add it to the calendar (error {exc.response.status_code})."
     except Exception:
+        log.exception("coach.schedule_training: unexpected calendar failure uid=%s", ctx.deps.user_id)
         return "Something went wrong reaching Google Calendar."
+    log.info(
+        "coach.schedule_training ok uid=%s discipline=%s start=%s",
+        ctx.deps.user_id, discipline, start.isoformat(),
+    )
     return f"Added {discipline} to Google Calendar on {start:%a %b %d at %H:%M}."
 
 
@@ -341,6 +374,7 @@ def _list_planned_tool(
     """
     token = ctx.deps.access_token
     if not token:
+        log.warning("coach.list_planned: no calendar token uid=%s", ctx.deps.user_id)
         return ("Couldn't reach Google Calendar — ask the user to sign in again "
                 "to reconnect it.")
     tz = ZoneInfo(ctx.deps.time_zone)
@@ -348,6 +382,10 @@ def _list_planned_tool(
         tmin = datetime.fromisoformat(start_iso) if start_iso else ctx.deps.now
         tmax = datetime.fromisoformat(end_iso) if end_iso else ctx.deps.now + timedelta(days=7)
     except ValueError:
+        log.warning(
+            "coach.list_planned: bad dates start=%r end=%r uid=%s",
+            start_iso, end_iso, ctx.deps.user_id,
+        )
         return "Couldn't read the calendar — I need valid dates."
     if tmin.tzinfo is None:
         tmin = tmin.replace(tzinfo=tz)
@@ -358,18 +396,21 @@ def _list_planned_tool(
         events = list_events(token, tmin, tmax)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 401:
+            log.warning("coach.list_planned: token expired (401) uid=%s", ctx.deps.user_id)
             return "The Google session expired — ask the user to sign in again."
         return f"Couldn't read the calendar (error {exc.response.status_code})."
     except Exception:
         return "Something went wrong reaching Google Calendar."
 
     if not events:
+        log.info("coach.list_planned ok uid=%s count=0", ctx.deps.user_id)
         return "No planned sessions on the calendar in that window."
     lines = []
     for ev in events:
         when = ev.start.date_time
         stamp = f"{when:%a %b %d %H:%M}" if when else "(all day)"
         lines.append(f"- {stamp} · {ev.summary or '(no title)'}")
+    log.info("coach.list_planned ok uid=%s count=%d", ctx.deps.user_id, len(events))
     return "Planned sessions:\n" + "\n".join(lines)
 
 
@@ -461,6 +502,7 @@ def coach_reply(message: str, user_id: str, now: datetime, history=None,
     Empty input short-circuits — no API call (and no charge) for a blank send.
     """
     if not message.strip():
+        log.debug("coach.reply skip: empty message uid=%s", user_id)
         return "", history or [], [], []
 
     stamp = f"(Current date & time: {now:%A %Y-%m-%d %H:%M})"
@@ -470,5 +512,15 @@ def coach_reply(message: str, user_id: str, now: datetime, history=None,
         prompt = f"{stamp}\n{message}"
 
     deps = CoachDeps(user_id=user_id, now=now, access_token=access_token)
+    log.info(
+        "coach.reply start uid=%s first_turn=%s chars=%d",
+        user_id, not history, len(message),
+    )
+    t0 = time.perf_counter()
     result = _get_agent().run_sync(prompt, message_history=history, deps=deps)
+    log.info(
+        "coach.reply ok uid=%s ms=%.0f reply_chars=%d logged=%d recovery=%d",
+        user_id, (time.perf_counter() - t0) * 1000,
+        len(result.output or ""), len(deps.logged), len(deps.logged_recovery),
+    )
     return result.output, result.all_messages(), deps.logged, deps.logged_recovery

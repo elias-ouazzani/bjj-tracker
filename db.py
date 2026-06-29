@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime
 from functools import lru_cache
 
@@ -86,9 +87,15 @@ def list_sessions(user_id: str, start: datetime, end: datetime) -> list[Session]
         .collection(SESSIONS_COLLECTION)
         .where(filter=FieldFilter("user_id", "==", user_id))
     )
+    t0 = time.perf_counter()
     sessions = [Session(**doc.to_dict()) for doc in query.stream()]
     sessions.sort(key=lambda s: s.started_at)
-    return [s for s in sessions if start <= s.started_at <= end]
+    filtered = [s for s in sessions if start <= s.started_at <= end]
+    log.debug(
+        "db.list_sessions uid=%s fetched=%d in_range=%d ms=%.0f",
+        user_id, len(sessions), len(filtered), (time.perf_counter() - t0) * 1000,
+    )
+    return filtered
 
 
 # ---------------------------------------------------------------------
@@ -132,6 +139,12 @@ def list_recovery(user_id: str, start: datetime, end: datetime) -> list[Recovery
         .collection(RECOVERY_COLLECTION)
         .where(filter=FieldFilter("user_id", "==", user_id))
     )
+    t0 = time.perf_counter()
     logs = [RecoveryLog(**doc.to_dict()) for doc in query.stream()]
     logs.sort(key=lambda r: r.logged_at)
-    return [r for r in logs if start <= r.logged_at <= end]
+    filtered = [r for r in logs if start <= r.logged_at <= end]
+    log.debug(
+        "db.list_recovery uid=%s fetched=%d in_range=%d ms=%.0f",
+        user_id, len(logs), len(filtered), (time.perf_counter() - t0) * 1000,
+    )
+    return filtered

@@ -77,6 +77,15 @@ class TestScheduleTraining:
         out = _schedule_training_tool(_ctx(), "bjj", "2026-06-24T18:00")
         assert "500" in out
 
+    def test_unexpected_error_is_handled_and_logged(self, monkeypatch):
+        # A non-HTTP failure (e.g. DNS/timeout) must degrade gracefully, not crash.
+        def fake_create(token, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(coach, "create_event", fake_create)
+        out = _schedule_training_tool(_ctx(), "bjj", "2026-06-24T18:00")
+        assert "went wrong" in out.lower()
+
 
 # ---------------- list_planned ----------------
 

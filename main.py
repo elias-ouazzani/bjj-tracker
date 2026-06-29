@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
@@ -1103,8 +1104,9 @@ def index(request: Request) -> None:
                         end = datetime.now()
                         try:
                             sessions = list_user_sessions(current_user_id, end - timedelta(days=30), end)
-                        except Exception as exc:
-                            ui.label(f"Could not load: {exc}").style(f"color: {MUTED}")
+                        except Exception:
+                            log.exception("recent_snapshot.list_sessions uid=%s", current_user_id)
+                            ui.label("Couldn't load recent sessions — please refresh.").style(f"color: {MUTED}")
                             return
                         if not sessions:
                             with ui.column().classes("empty-state w-full items-center gap-2"):
@@ -1297,6 +1299,21 @@ def index(request: Request) -> None:
                     elif d == "weights" and hasattr(log_flow, "_ex_col"):
                         _new_exercise_row(log_flow._ex_col, exercises)
 
+                async def _safe_extract_tags(notes: str):
+                    """AI tagging is best-effort. If Claude or the network fails,
+                    log it and save the session WITHOUT tags rather than losing
+                    the whole entry — a hiccup in tagging shouldn't cost the log."""
+                    try:
+                        return await asyncio.to_thread(extract_tags, notes)
+                    except Exception:
+                        log.exception(
+                            "extract_tags failed uid=%s — saving session without tags",
+                            current_user_id,
+                        )
+                        ui.notify("Couldn't auto-tag techniques — saved without them.",
+                                  color="warning")
+                        return []
+
                 async def on_save() -> None:
                     d = picked["value"]
                     if not d:
@@ -1308,7 +1325,7 @@ def index(request: Request) -> None:
                             notes = (e["notes"] or "").strip()
                             if not notes:
                                 continue
-                            tags = await asyncio.to_thread(extract_tags, notes)
+                            tags = await _safe_extract_tags(notes)
                             log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
                         data = GrapplingData(
                             discipline=d,
@@ -1323,7 +1340,7 @@ def index(request: Request) -> None:
                             notes = (e["notes"] or "").strip()
                             if not notes:
                                 continue
-                            tags = await asyncio.to_thread(extract_tags, notes)
+                            tags = await _safe_extract_tags(notes)
                             log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
                         data = MmaData(
                             discipline="mma",
@@ -1340,7 +1357,7 @@ def index(request: Request) -> None:
                             notes = (e["notes"] or "").strip()
                             if not notes:
                                 continue
-                            tags = await asyncio.to_thread(extract_tags, notes)
+                            tags = await _safe_extract_tags(notes)
                             log_entries.append(LogEntry(notes_raw=notes, category=e["category"], tags=tags))
                         data = StrikingData(
                             discipline=d,
@@ -1375,22 +1392,30 @@ def index(request: Request) -> None:
                             duration_minutes=int(session_state["weights_duration_minutes"]),
                         )
 
-                    started = datetime.fromisoformat(f"{session_state['date']}T{session_state['time']}:00")
-                    session = Session(
-                        id=editing_id["value"],
-                        user_id=current_user_id,
-                        started_at=started,
-                        notes=session_state["notes"] or None,
-                        data=data,
-                    )
+                    t0 = time.perf_counter()
                     try:
+                        started = datetime.fromisoformat(f"{session_state['date']}T{session_state['time']}:00")
+                        session = Session(
+                            id=editing_id["value"],
+                            user_id=current_user_id,
+                            started_at=started,
+                            notes=session_state["notes"] or None,
+                            data=data,
+                        )
                         saved = save_user_session(current_user_id, session)
                     except SessionAccessDenied:
                         ui.notify("Cannot save — session belongs to another user", color="negative")
                         return
+                    except Exception:
+                        log.exception(
+                            "session.save failed uid=%s discipline=%s", current_user_id, d,
+                        )
+                        ui.notify("Couldn't save your session — please try again.",
+                                  color="negative")
+                        return
                     log.info(
-                        "session.save uid=%s id=%s discipline=%s",
-                        current_user_id, saved.id, d,
+                        "session.save uid=%s id=%s discipline=%s ms=%.0f",
+                        current_user_id, saved.id, d, (time.perf_counter() - t0) * 1000,
                     )
                     ui.notify("Saved", color="positive")
                     editing_id["value"] = None
@@ -1500,6 +1525,11 @@ def index(request: Request) -> None:
                     except RecoveryAccessDenied:
                         ui.notify("Cannot save — recovery belongs to another user", color="negative")
                         return
+                    except Exception:
+                        log.exception("recovery.save failed uid=%s", current_user_id)
+                        ui.notify("Couldn't save your recovery log — please try again.",
+                                  color="negative")
+                        return
                     ui.notify("Saved", color="positive")
                     reset_recovery_form()
                     stats_panel.refresh()
@@ -1538,8 +1568,9 @@ def index(request: Request) -> None:
                     end = datetime.now()
                     try:
                         logs = list_user_recovery(current_user_id, end - timedelta(days=30), end)
-                    except Exception as exc:
-                        ui.label(f"Could not load: {exc}").style(f"color: {MUTED}")
+                    except Exception:
+                        log.exception("recovery_recent.list_recovery uid=%s", current_user_id)
+                        ui.label("Couldn't load recovery — please refresh.").style(f"color: {MUTED}")
                         return
                     if not logs:
                         with ui.column().classes("empty-state w-full items-center gap-2"):
@@ -1612,8 +1643,9 @@ def index(request: Request) -> None:
                     start = end - timedelta(days=30)
                     try:
                         sessions = list_user_sessions(current_user_id, start, end)
-                    except Exception as exc:
-                        ui.label(f"Could not load history: {exc}").style(f"color: {MUTED}")
+                    except Exception:
+                        log.exception("history_container.list_sessions uid=%s", current_user_id)
+                        ui.label("Couldn't load history — please refresh.").style(f"color: {MUTED}")
                         return
                     if not sessions:
                         with ui.column().classes("empty-state w-full items-center gap-2"):
