@@ -166,6 +166,67 @@ Personal cheat sheet for every tool, library, and concept used in this project. 
 
 ---
 
+## Next steps — public launch (custom domain + marketing page)
+
+### 0. Blocker to resolve first: Cloud Run "Forbidden" org policy
+- `deploy.yml` already passes `--allow-unauthenticated`, but Atheal's GCP org
+  policy strips the `allUsers` invoker binding anyway — so even signed-in
+  users hit "Forbidden" before Firebase Auth ever runs (see Gotchas above).
+- A custom domain does **not** fix this — it's an IAM-layer block, upstream
+  of the app. Pick one:
+  - **Identity-Aware Proxy (IAP)** in front of Cloud Run — gates the request
+    with a Google-account check before it reaches the container; works even
+    under the org policy since IAP grants specific principals instead of
+    `allUsers`.
+  - Ask an org admin for an exception on this project's org policy
+    (the constraint blocking `allUsers` + `roles/run.invoker`, e.g.
+    `iam.allowedPolicyMemberDomains`).
+- Without one of these, a pretty domain just gives "Forbidden" a nicer URL —
+  do this before investing in DNS/marketing work below.
+
+### 1. Domain + Cloudflare DNS
+- Point the domain's nameservers at Cloudflare (Cloudflare becomes the DNS host).
+- Two things to route:
+  - `app.<domain>` → the NiceGUI/Cloud Run service (the real product, gated
+    by Firebase login at `/`)
+  - apex `<domain>` (and/or `www.<domain>`) → the marketing/landing page
+- Verify domain ownership in Google Search Console first — required before
+  Cloud Run will map a custom domain to a service. Google gives a `TXT`
+  record to add in Cloudflare.
+- Create the mapping:
+  `gcloud run domain-mappings create --service bjj-tracker --domain app.<domain> --region europe-west1`
+  This prints the exact record(s) to add — a `CNAME` to `ghs.googlehosted.com`
+  for a subdomain (an apex domain needs `A`/`AAAA` records to Google's anycast
+  IPs instead, since `CNAME` isn't valid at a zone apex).
+- **Cloudflare proxy must be "DNS only" (grey cloud, not orange) for
+  `app.<domain>`.** Cloud Run provisions and serves its own Google-managed TLS
+  cert for that hostname; if Cloudflare proxies the traffic, requests hit
+  Cloudflare's edge/cert instead of Google's, so both cert issuance and normal
+  serving break.
+- Cert provisioning after the DNS record is correct: usually 15–60 min, up to
+  24h worst case.
+
+### 2. Marketing page → app login
+- Simplest: a static one-page site on **Cloudflare Pages** (free, DNS-native,
+  no separate host to manage) at the apex/`www`, with one CTA button
+  ("Get started" / "Log in") linking to `https://app.<domain>/`.
+- That link lands on the existing auth gate in `main.py` (`index()` at `/`),
+  which already redirects unauthenticated visitors to `/login` — no app
+  changes needed, the marketing site is purely additive.
+- Alternative (no second codebase to host): add a logged-out marketing view
+  directly in `main.py` at `/` instead of the immediate redirect, and move
+  today's authenticated home to e.g. `/app`. More work, one less moving part
+  to host/deploy.
+
+### 3. DNS record cheat sheet (Cloudflare)
+| Record | Host | Value | Proxy status | Purpose |
+|---|---|---|---|---|
+| TXT | `@` or host Google gives you | `google-site-verification=...` | n/a | prove domain ownership to Search Console |
+| CNAME | `app` | `ghs.googlehosted.com` (or whatever `gcloud domain-mappings create` prints) | **DNS only (grey)** | routes `app.<domain>` to Cloud Run |
+| A/AAAA (apex) or CNAME (`www`) | `@` / `www` | Cloudflare Pages target | proxied (orange) is fine | serves the marketing page |
+
+---
+
 ## Coming next — concepts to learn
 
 ### Discriminated unions (Phase B — schema redesign)
