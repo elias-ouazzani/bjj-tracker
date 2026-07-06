@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Strain — Every session. Measured.</title>
+  <meta name="description" content="Log BJJ, wrestling, MMA, striking, cardio and lifting in seconds. Track your weekly training load and recovery, and let an AI coach turn your logs into your next session." />
+
+  <!-- Open Graph / social preview -->
+  <meta property="og:title" content="Strain — Every session. Measured." />
+  <meta property="og:description" content="A training tracker for combat sports. Load, recovery, and an AI coach that reads your logs." />
+  <meta property="og:type" content="website" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,400;0,500;0,600;0,700;0,800&display=swap" rel="stylesheet">
+
+  <style>
+    /* ======================================================================
+       Strain design tokens — mirrored from main.py so the marketing page and
+       the app read as one product. If a token changes in the app, change it
+       here too.
+       ====================================================================== */
+    :root {
+      --bg: #0D0D0D;          /* warm near-black */
+      --surface: #1A1A1A;     /* cards */
+      --elevated: #242424;    /* hover / active */
+      --track: #2A2A2A;       /* gauge/bar backgrounds */
+      --hairline: #2E2E2E;    /* rare dividers */
+
+      --text: #F5F5F5;        /* never pure white */
+      --text2: #A8A8A8;       /* secondary */
+      --muted: #6B6B6B;       /* labels */
+      --faint: #4A4A4A;       /* ghosted */
+
+      --strain: #FF5A1F;      /* accent midpoint */
+      --strain-start: #FF4500;
+      --strain-end: #FF6B00;
+
+      --grappling: #1E88E5;   /* per-discipline hues, kept distinct */
+      --recovery: #00C853;
+      --sleep: #1E88E5;
+      --strength: #FFD600;
+
+      --radius: 12px;
+      --font: 'Hanken Grotesk', -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --maxw: 1080px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-weight: 400;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+    /* Tiny uppercase tracked label — the .s-label from the app */
+    .s-label {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    /* --- Buttons --- */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font);
+      font-weight: 700;
+      font-size: 16px;
+      border: none;
+      border-radius: var(--radius);
+      padding: 14px 26px;
+      cursor: pointer;
+      transition: transform .12s ease, filter .12s ease, background .12s ease;
+      white-space: nowrap;
+    }
+    .btn:active { transform: translateY(1px); }
+
+    .btn-primary {
+      color: #fff;
+      background: linear-gradient(135deg, var(--strain-start), var(--strain-end));
+    }
+    .btn-primary:hover { filter: brightness(1.08); }
+
+    .btn-ghost {
+      color: var(--text);
+      background: var(--elevated);
+    }
+    .btn-ghost:hover { background: #2c2c2c; }
+
+    /* ======================================================================
+       Nav
+       ====================================================================== */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(13,13,13,0.72);
+      backdrop-filter: saturate(140%) blur(12px);
+      border-bottom: 1px solid var(--hairline);
+    }
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 68px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand .mark { display: block; }
+    .brand .word {
+      font-weight: 800;
+      font-size: 22px;
+      letter-spacing: -0.01em;
+    }
+
+    /* ======================================================================
+       Hero
+       ====================================================================== */
+    .hero {
+      padding: 72px 0 88px;
+      position: relative;
+    }
+    /* subtle strain-orange glow behind the hero */
+    .hero::before {
+      content: "";
+      position: absolute;
+      top: -120px; right: -140px;
+      width: 520px; height: 520px;
+      background: radial-gradient(circle, rgba(255,90,31,0.16), transparent 62%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .hero-grid {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 48px;
+      align-items: center;
+    }
+    .hero h1 {
+      font-size: clamp(40px, 6.4vw, 66px);
+      font-weight: 800;
+      line-height: 1.02;
+      letter-spacing: -0.03em;
+      margin: 18px 0 20px;
+    }
+    .hero h1 .accent {
+      background: linear-gradient(135deg, var(--strain-start), var(--strain-end));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero p.lead {
+      font-size: clamp(16px, 2vw, 19px);
+      color: var(--text2);
+      max-width: 30em;
+      margin-bottom: 32px;
+    }
+    .hero-cta { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+    .hero-note { color: var(--muted); font-size: 14px; }
+
+    /* the signature ScoreRing visual */
+    .ring-card {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ring-inner {
+      position: relative;
+      width: 260px; height: 260px;
+    }
+    .ring-center {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center; gap: 4px;
+    }
+    .ring-center .big {
+      font-weight: 800;
+      font-size: 76px;
+      line-height: 1;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ======================================================================
+       Feature cards
+       ====================================================================== */
+    section.features { padding: 24px 0 40px; }
+    .features h2, .cta-band h2 {
+      font-size: clamp(28px, 4vw, 40px);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin: 8px 0 8px;
+    }
+    .section-intro { max-width: 34em; color: var(--text2); margin-bottom: 40px; }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+    .card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 26px 26px 28px;
+      transition: background .14s ease, transform .14s ease;
+    }
+    .card:hover { background: var(--elevated); transform: translateY(-2px); }
+    .card .icon {
+      width: 44px; height: 44px;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--elevated);
+      margin-bottom: 16px;
+    }
+    .card:hover .icon { background: #2c2c2c; }
+    .card h3 { font-size: 19px; font-weight: 700; margin-bottom: 6px; }
+    .card p { color: var(--text2); font-size: 15px; }
+
+    /* small colored dot to echo per-discipline accents */
+    .dot { width: 18px; height: 18px; border-radius: 5px; }
+
+    /* ======================================================================
+       Discipline strip
+       ====================================================================== */
+    .disciplines { padding: 48px 0; }
+    .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--surface);
+      border-radius: 999px;
+      padding: 9px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text2);
+    }
+    .chip .dot { width: 10px; height: 10px; border-radius: 50%; }
+
+    /* ======================================================================
+       Final CTA band
+       ====================================================================== */
+    .cta-band {
+      margin: 40px 0 64px;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(255,90,31,0.14), transparent 55%),
+        var(--surface);
+      border-radius: 20px;
+      padding: 56px 40px;
+      text-align: center;
+    }
+    .cta-band p { color: var(--text2); max-width: 34em; margin: 6px auto 28px; }
+
+    /* ======================================================================
+       Footer
+       ====================================================================== */
+    footer {
+      border-top: 1px solid var(--hairline);
+      padding: 32px 0 48px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .foot .brand .word { font-size: 18px; }
+
+    /* ======================================================================
+       Responsive
+       ====================================================================== */
+    @media (max-width: 860px) {
+      .hero-grid { grid-template-columns: 1fr; gap: 8px; }
+      .ring-card { order: -1; margin-bottom: 8px; }
+      .ring-inner { width: 200px; height: 200px; }
+      .ring-center .big { font-size: 58px; }
+      .cards { grid-template-columns: 1fr; }
+      .hero { padding: 48px 0 56px; }
+    }
+    @media (max-width: 520px) {
+      .nav .btn-ghost { padding: 10px 16px; font-size: 15px; }
+      .cta-band { padding: 44px 22px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- =====================================================================
+       NAV
+       ===================================================================== -->
+  <header>
+    <div class="wrap nav">
+      <div class="brand">
+        <svg class="mark" width="34" height="34" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <linearGradient id="markNav" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#FF4500"></stop>
+              <stop offset="100%" stop-color="#FF6B00"></stop>
+            </linearGradient>
+          </defs>
+          <g transform="translate(32,32)">
+            <circle r="24" fill="none" stroke="#2A2A2A" stroke-width="8" stroke-dasharray="113 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
+            <circle r="24" fill="none" stroke="url(#markNav)" stroke-width="8" stroke-dasharray="88 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
+          </g>
+        </svg>
+        <span class="word">Strain</span>
+      </div>
+      <!-- APP URL: change this to https://app.<your-domain> once DNS is live -->
+      <a class="btn btn-ghost" href="https://app.example.com/">Log in</a>
+    </div>
+  </header>
+
+  <!-- =====================================================================
+       HERO
+       ===================================================================== -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <div class="s-label">Training tracker for combat sports</div>
+        <h1>Every session.<br><span class="accent">Measured.</span></h1>
+        <p class="lead">
+          Log BJJ, wrestling, MMA, striking, cardio and lifting in seconds.
+          Track your weekly training load and recovery — and let an AI coach
+          turn your logs into your next session.
+        </p>
+        <div class="hero-cta">
+          <!-- APP URL: change this to https://app.<your-domain> once DNS is live -->
+          <a class="btn btn-primary" href="https://app.example.com/">Start training →</a>
+          <span class="hero-note">Free · Sign in with Google</span>
+        </div>
+      </div>
+
+      <!-- Signature ScoreRing: weekly training load vs a 300-min goal.
+           Geometry mirrors _score_ring_html() in main.py (270° arc, 90° gap
+           at the bottom, rotated 135°). -->
+      <div class="ring-card">
+        <div class="ring-inner">
+          <svg width="260" height="260" style="display:block; transform:rotate(135deg)">
+            <defs>
+              <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#FF4500"></stop>
+                <stop offset="100%" stop-color="#FF6B00"></stop>
+              </linearGradient>
+            </defs>
+            <!-- track: full 270° arc -->
+            <circle cx="130" cy="130" r="119" fill="none" stroke="#2A2A2A"
+              stroke-width="22" stroke-linecap="round"
+              stroke-dasharray="560.8 747.7"></circle>
+            <!-- filled: 247/300 ≈ 82% of the arc -->
+            <circle cx="130" cy="130" r="119" fill="none" stroke="url(#ringGrad)"
+              stroke-width="22" stroke-linecap="round"
+              stroke-dasharray="461.6 747.7"></circle>
+          </svg>
+          <div class="ring-center">
+            <div class="big">247</div>
+            <div class="s-label">Weekly load</div>
+            <div style="color:var(--text2); font-size:14px; margin-top:2px;">of 300 min goal</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       FEATURES
+       ===================================================================== -->
+  <section class="features">
+    <div class="wrap">
+      <div class="s-label">What you get</div>
+      <h2>Built like a performance device.</h2>
+      <p class="section-intro">
+        No clutter, no vanity metrics. The number is the design — everything
+        here exists to tell you how hard you trained and whether you're ready
+        to go again.
+      </p>
+
+      <div class="cards">
+        <div class="card">
+          <div class="icon"><span class="dot" style="background:var(--grappling)"></span></div>
+          <h3>Log any discipline</h3>
+          <p>Two taps to log BJJ, wrestling, MMA, boxing, kickboxing, cardio or
+             lifting. Drilling and sparring rounds, exercises, notes — captured fast.</p>
+        </div>
+
+        <div class="card">
+          <div class="icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="var(--strain)" stroke-width="2.5" stroke-dasharray="42 14" stroke-linecap="round" transform="rotate(120 12 12)"/>
+            </svg>
+          </div>
+          <h3>Weekly training load</h3>
+          <p>The signature ring shows your load against a goal at a glance —
+             so you know if you're building, coasting, or overreaching.</p>
+        </div>
+
+        <div class="card">
+          <div class="icon"><span class="dot" style="background:var(--recovery)"></span></div>
+          <h3>Recovery score</h3>
+          <p>Sleep, soreness and rest roll into a daily readiness number — the
+             honest answer to "should I train hard today?"</p>
+        </div>
+
+        <div class="card">
+          <div class="icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path d="M12 3v3M12 18v3M5 12H2M22 12h-3M6 6l-2-2M20 20l-2-2M6 18l-2 2M20 4l-2 2" stroke="var(--strain)" stroke-width="2" stroke-linecap="round"/>
+              <circle cx="12" cy="12" r="4" stroke="var(--strain)" stroke-width="2"/>
+            </svg>
+          </div>
+          <h3>AI coach</h3>
+          <p>Chat with a coach that reads your actual logs, tells you what to
+             work on next — and can even log a session for you as you talk.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       DISCIPLINE STRIP
+       ===================================================================== -->
+  <section class="disciplines">
+    <div class="wrap">
+      <div class="s-label">One tracker, every mat and every rack</div>
+      <div class="chips">
+        <span class="chip"><span class="dot" style="background:#1E88E5"></span> BJJ</span>
+        <span class="chip"><span class="dot" style="background:#42A5F5"></span> Wrestling</span>
+        <span class="chip"><span class="dot" style="background:#FF5A1F"></span> MMA</span>
+        <span class="chip"><span class="dot" style="background:#FF8A3D"></span> Boxing</span>
+        <span class="chip"><span class="dot" style="background:#E64980"></span> Kickboxing</span>
+        <span class="chip"><span class="dot" style="background:#00C853"></span> Cardio</span>
+        <span class="chip"><span class="dot" style="background:#FFD600"></span> Weights</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       FINAL CTA
+       ===================================================================== -->
+  <section class="wrap">
+    <div class="cta-band">
+      <div class="s-label">Start today</div>
+      <h2>Know your strain.</h2>
+      <p>Your first session takes under a minute to log. Sign in with Google
+         and start building the picture.</p>
+      <!-- APP URL: change this to https://app.<your-domain> once DNS is live -->
+      <a class="btn btn-primary" href="https://app.example.com/">Start training →</a>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       FOOTER
+       ===================================================================== -->
+  <footer>
+    <div class="wrap foot">
+      <div class="brand">
+        <svg class="mark" width="26" height="26" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <linearGradient id="markFoot" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#FF4500"></stop>
+              <stop offset="100%" stop-color="#FF6B00"></stop>
+            </linearGradient>
+          </defs>
+          <g transform="translate(32,32)">
+            <circle r="24" fill="none" stroke="#2A2A2A" stroke-width="8" stroke-dasharray="113 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
+            <circle r="24" fill="none" stroke="url(#markFoot)" stroke-width="8" stroke-dasharray="88 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
+          </g>
+        </svg>
+        <span class="word">Strain</span>
+      </div>
+      <div>© 2026 Strain · A personal training tracker</div>
+    </div>
+  </footer>
+
+</body>
+</html>
