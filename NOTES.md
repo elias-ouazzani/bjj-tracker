@@ -4,6 +4,52 @@ Personal cheat sheet for every tool, library, and concept used in this project. 
 
 ---
 
+## ⏸ LAUNCH STATUS — pick up here (last updated 2026-07-08)
+
+**Goal:** make the app publicly reachable on a custom domain with a marketing
+page in front. Working branch: `claude/strain-project-next-steps-pqn8hg`.
+
+**Done:**
+- Domain bought (on Cloudflare as DNS host).
+- Marketing landing page built → `marketing/` (Cloudflare Pages, deploy notes
+  in `marketing/README.md`). Placeholder app URL in 3 spots to swap later.
+- Confirmed the launch blocker is an **org policy**, TWICE:
+  - `allUsers` invoker on Cloud Run → blocked by
+    `constraints/iam.managed.allowedPolicyMembers`.
+  - service-account key creation → blocked by
+    `constraints/iam.disableServiceAccountKeyCreation`.
+- Chosen path to work around it **without an admin**: Cloudflare Worker →
+  PRIVATE Cloud Run via Workload Identity Federation (no key). Full package
+  built → `cloudflare-proxy/` (gen-keys.mjs, setup-gcp.sh, worker.js,
+  wrangler.toml, README.md).
+
+**NEXT ACTION (in Cloud Shell, project `atheal-internship-elias`):**
+```
+cd ~ && git clone https://github.com/elias-ouazzani/bjj-tracker.git
+cd bjj-tracker && git checkout claude/strain-project-next-steps-pqn8hg
+cd cloudflare-proxy
+node gen-keys.mjs      # writes priv.pem + jwks.json, prints KID
+bash setup-gcp.sh      # <-- Step 4 is the FAIL-FAST GATE
+```
+- **If `setup-gcp.sh` Step 4 errors** with `iam.managed.allowedPolicyMembers`
+  → the org blocks this too. **Abandon the Worker path and migrate to a
+  personal GCP project** (recreate Cloud Run + Firestore + Secret Manager +
+  WIF there; personal project has no org policy so `allUsers` just works).
+- **If Step 4 succeeds** → copy the printed Cloud Run URL, then continue with
+  `cloudflare-proxy/README.md` steps 3–7 (fill wrangler.toml, `wrangler
+  deploy`, add proxied `app` DNS record, add `app.<domain>` to Firebase
+  Authorized domains, test).
+
+**Still open / decisions pending:**
+- Admin request (asking for a policy exception) was drafted but not yet
+  answered — the Worker path makes it optional, not required.
+- Marketing page's 3 app links still point at `https://app.example.com/` —
+  swap to `https://app.<real-domain>` once the app domain is live.
+- Marketing page is on the feature branch, not `main` — merge to `main` (or
+  point Cloudflare Pages at the branch) before deploying.
+
+---
+
 ## Tools and libraries
 
 ### Pydantic

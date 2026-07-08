@@ -2,6 +2,10 @@
 
 Personal BJJ training session log. Built with NiceGUI + Firestore + Pydantic AI.
 
+> **Active work:** public-launch effort (custom domain + marketing page). Current
+> state, the org-policy blocker, and the exact next command live in
+> `NOTES.md` → "⏸ LAUNCH STATUS — pick up here". Read that first when resuming.
+
 ## Stack
 - Python 3.11+
 - NiceGUI 2.x (web UI)
