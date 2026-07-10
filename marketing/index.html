@@ -10,480 +10,506 @@
   <meta property="og:title" content="Strain — Every session. Measured." />
   <meta property="og:description" content="A training tracker for combat sports. Load, recovery, and an AI coach that reads your logs." />
   <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://strain.fit/" />
+  <meta name="twitter:card" content="summary_large_image" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,400;0,500;0,600;0,700;0,800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
   <style>
-    /* ======================================================================
-       Strain design tokens — mirrored from main.py so the marketing page and
-       the app read as one product. If a token changes in the app, change it
-       here too.
-       ====================================================================== */
+    /* ============================================================
+       Strain — instrument-panel landing. Tokens mirror the app
+       (see main.py). If a token changes there, change it here too.
+       ============================================================ */
     :root {
-      --bg: #0D0D0D;          /* warm near-black */
-      --surface: #1A1A1A;     /* cards */
-      --elevated: #242424;    /* hover / active */
-      --track: #2A2A2A;       /* gauge/bar backgrounds */
-      --hairline: #2E2E2E;    /* rare dividers */
-
-      --text: #F5F5F5;        /* never pure white */
-      --text2: #A8A8A8;       /* secondary */
-      --muted: #6B6B6B;       /* labels */
-      --faint: #4A4A4A;       /* ghosted */
-
-      --strain: #FF5A1F;      /* accent midpoint */
-      --strain-start: #FF4500;
-      --strain-end: #FF6B00;
-
-      --grappling: #1E88E5;   /* per-discipline hues, kept distinct */
-      --recovery: #00C853;
-      --sleep: #1E88E5;
-      --strength: #FFD600;
-
-      --radius: 12px;
-      --font: 'Hanken Grotesk', -apple-system, 'Segoe UI', Roboto, sans-serif;
-      --maxw: 1080px;
+      --bg:#0D0D0D; --panel:#151515; --surface:#1A1A1A; --elevated:#242424;
+      --track:#2A2A2A; --hairline:#2E2E2E;
+      --text:#F5F5F5; --text2:#A8A8A8; --muted:#6B6B6B; --faint:#4A4A4A;
+      --strain:#FF5A1F; --strain-a:#FF4500; --strain-b:#FF6B00;
+      --grappling:#1E88E5; --recovery:#00C853; --strength:#FFD600; --striking:#FF8A3D; --kick:#E64980;
+      --radius:14px;
+      --font:'Hanken Grotesk','Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif;
+      --maxw:1120px;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    html { scroll-behavior: smooth; }
-
+    *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+    html { scroll-behavior:smooth; }
     body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font);
-      font-weight: 400;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-      text-rendering: optimizeLegibility;
-      overflow-x: hidden;
+      background:var(--bg);
+      color:var(--text);
+      font-family:var(--font);
+      font-weight:400;
+      line-height:1.5;
+      -webkit-font-smoothing:antialiased;
+      text-rendering:optimizeLegibility;
+      overflow-x:hidden;
     }
+    a { color:inherit; text-decoration:none; }
+    :focus-visible { outline:2px solid var(--strain); outline-offset:3px; border-radius:6px; }
 
-    a { color: inherit; text-decoration: none; }
+    .wrap { max-width:var(--maxw); margin:0 auto; padding:0 24px; }
+    .tnum { font-variant-numeric:tabular-nums; }
 
-    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
-
-    /* Tiny uppercase tracked label — the .s-label from the app */
     .s-label {
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--muted);
+      font-size:11.5px; font-weight:600; letter-spacing:.16em;
+      text-transform:uppercase; color:var(--muted);
     }
 
-    /* --- Buttons --- */
+    /* ---------- buttons ---------- */
     .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      font-family: var(--font);
-      font-weight: 700;
-      font-size: 16px;
-      border: none;
-      border-radius: var(--radius);
-      padding: 14px 26px;
-      cursor: pointer;
-      transition: transform .12s ease, filter .12s ease, background .12s ease;
-      white-space: nowrap;
+      display:inline-flex; align-items:center; gap:8px;
+      font-family:var(--font); font-weight:700; font-size:15.5px;
+      border:none; border-radius:var(--radius); padding:13px 24px;
+      cursor:pointer; white-space:nowrap;
+      transition:transform .12s ease, filter .12s ease, background .12s ease;
     }
-    .btn:active { transform: translateY(1px); }
+    .btn:active { transform:translateY(1px); }
+    .btn-primary { color:#fff; background:linear-gradient(135deg,var(--strain-a),var(--strain-b)); }
+    .btn-primary:hover { filter:brightness(1.08); }
+    .btn-ghost { color:var(--text); background:var(--elevated); }
+    .btn-ghost:hover { background:#2f2f2f; }
 
-    .btn-primary {
-      color: #fff;
-      background: linear-gradient(135deg, var(--strain-start), var(--strain-end));
+    /* ---------- nav ---------- */
+    .nav-outer {
+      position:sticky; top:0; z-index:50;
+      background:rgba(13,13,13,.72);
+      backdrop-filter:saturate(140%) blur(12px);
+      -webkit-backdrop-filter:saturate(140%) blur(12px);
+      border-bottom:1px solid var(--hairline);
     }
-    .btn-primary:hover { filter: brightness(1.08); }
+    .nav { display:flex; align-items:center; justify-content:space-between; height:66px; }
+    .brand { display:flex; align-items:center; gap:11px; }
+    .brand .word { font-weight:800; font-size:21px; letter-spacing:-.01em; }
+    .nav-actions { display:flex; align-items:center; gap:10px; }
 
-    .btn-ghost {
-      color: var(--text);
-      background: var(--elevated);
-    }
-    .btn-ghost:hover { background: #2c2c2c; }
-
-    /* ======================================================================
-       Nav
-       ====================================================================== */
-    header {
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      background: rgba(13,13,13,0.72);
-      backdrop-filter: saturate(140%) blur(12px);
-      border-bottom: 1px solid var(--hairline);
-    }
-    .nav {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      height: 68px;
-    }
-    .brand { display: flex; align-items: center; gap: 12px; }
-    .brand .mark { display: block; }
-    .brand .word {
-      font-weight: 800;
-      font-size: 22px;
-      letter-spacing: -0.01em;
-    }
-
-    /* ======================================================================
-       Hero
-       ====================================================================== */
-    .hero {
-      padding: 72px 0 88px;
-      position: relative;
-    }
-    /* subtle strain-orange glow behind the hero */
+    /* ---------- hero ---------- */
+    .hero { position:relative; padding:74px 0 40px; }
     .hero::before {
-      content: "";
-      position: absolute;
-      top: -120px; right: -140px;
-      width: 520px; height: 520px;
-      background: radial-gradient(circle, rgba(255,90,31,0.16), transparent 62%);
-      pointer-events: none;
-      z-index: 0;
+      content:""; position:absolute; top:-140px; right:-160px;
+      width:560px; height:560px;
+      background:radial-gradient(circle,rgba(255,90,31,.15),transparent 62%);
+      pointer-events:none;
     }
     .hero-grid {
-      position: relative;
-      z-index: 1;
-      display: grid;
-      grid-template-columns: 1.15fr 0.85fr;
-      gap: 48px;
-      align-items: center;
+      position:relative; display:grid;
+      grid-template-columns:1.12fr .88fr; gap:52px; align-items:center;
+    }
+    .eyebrow { display:inline-flex; align-items:center; gap:9px; margin-bottom:20px; }
+    .eyebrow .pulse {
+      width:7px; height:7px; border-radius:50%;
+      background:var(--strain); box-shadow:0 0 0 0 rgba(255,90,31,.6);
     }
     .hero h1 {
-      font-size: clamp(40px, 6.4vw, 66px);
-      font-weight: 800;
-      line-height: 1.02;
-      letter-spacing: -0.03em;
-      margin: 18px 0 20px;
+      font-size:clamp(42px,6.6vw,70px); font-weight:800; line-height:1.0;
+      letter-spacing:-.035em; margin:0 0 22px; text-wrap:balance;
     }
     .hero h1 .accent {
-      background: linear-gradient(135deg, var(--strain-start), var(--strain-end));
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
+      background:linear-gradient(135deg,var(--strain-a),var(--strain-b));
+      -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; color:transparent;
     }
-    .hero p.lead {
-      font-size: clamp(16px, 2vw, 19px);
-      color: var(--text2);
-      max-width: 30em;
-      margin-bottom: 32px;
-    }
-    .hero-cta { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-    .hero-note { color: var(--muted); font-size: 14px; }
+    .lead { font-size:clamp(16px,1.85vw,18.5px); color:var(--text2); max-width:31em; margin:0 0 30px; }
+    .hero-cta { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+    .hero-note { color:var(--muted); font-size:13.5px; }
 
-    /* the signature ScoreRing visual */
-    .ring-card {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .ring-inner {
-      position: relative;
-      width: 260px; height: 260px;
-    }
-    .ring-center {
-      position: absolute; inset: 0;
-      display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      text-align: center; gap: 4px;
-    }
-    .ring-center .big {
-      font-weight: 800;
-      font-size: 76px;
-      line-height: 1;
-      letter-spacing: -0.02em;
-      font-variant-numeric: tabular-nums;
-    }
+    /* ScoreRing */
+    .ring-card { display:flex; align-items:center; justify-content:center; }
+    .ring-inner { position:relative; width:278px; height:278px; }
+    .ring-svg { display:block; transform:rotate(135deg); }
+    .ring-fill { transition:stroke-dashoffset 1.5s cubic-bezier(.22,.61,.36,1); }
+    .ring-center { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:3px; }
+    .ring-center .big { font-weight:800; font-size:80px; line-height:1; letter-spacing:-.02em; }
+    .ring-center .sub { color:var(--text2); font-size:13.5px; margin-top:2px; }
 
-    /* ======================================================================
-       Feature cards
-       ====================================================================== */
-    section.features { padding: 24px 0 40px; }
-    .features h2, .cta-band h2 {
-      font-size: clamp(28px, 4vw, 40px);
-      font-weight: 800;
-      letter-spacing: -0.02em;
-      margin: 8px 0 8px;
-    }
-    .section-intro { max-width: 34em; color: var(--text2); margin-bottom: 40px; }
-
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 16px;
-    }
-    .card {
-      background: var(--surface);
-      border-radius: var(--radius);
-      padding: 26px 26px 28px;
-      transition: background .14s ease, transform .14s ease;
-    }
-    .card:hover { background: var(--elevated); transform: translateY(-2px); }
-    .card .icon {
-      width: 44px; height: 44px;
-      border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      background: var(--elevated);
-      margin-bottom: 16px;
-    }
-    .card:hover .icon { background: #2c2c2c; }
-    .card h3 { font-size: 19px; font-weight: 700; margin-bottom: 6px; }
-    .card p { color: var(--text2); font-size: 15px; }
-
-    /* small colored dot to echo per-discipline accents */
-    .dot { width: 18px; height: 18px; border-radius: 5px; }
-
-    /* ======================================================================
-       Discipline strip
-       ====================================================================== */
-    .disciplines { padding: 48px 0; }
-    .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+    /* ---------- discipline strip ---------- */
+    .strip { padding:14px 0 36px; }
+    .chips { display:flex; flex-wrap:wrap; gap:9px; margin-top:14px; }
     .chip {
-      display: inline-flex; align-items: center; gap: 8px;
-      background: var(--surface);
-      border-radius: 999px;
-      padding: 9px 16px;
-      font-size: 14px;
-      font-weight: 500;
-      color: var(--text2);
+      display:inline-flex; align-items:center; gap:8px;
+      background:var(--surface); border-radius:999px; padding:8px 15px;
+      font-size:13.5px; font-weight:500; color:var(--text2);
     }
-    .chip .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .chip .dot { width:9px; height:9px; border-radius:50%; }
 
-    /* ======================================================================
-       Final CTA band
-       ====================================================================== */
-    .cta-band {
-      margin: 40px 0 64px;
+    /* ---------- section scaffolding ---------- */
+    .sec { padding:46px 0; }
+    .sec h2 { font-size:clamp(27px,3.8vw,40px); font-weight:800; letter-spacing:-.025em; margin:10px 0 0; text-wrap:balance; }
+    .sec .intro { max-width:36em; color:var(--text2); margin:14px 0 0; font-size:16px; }
+
+    /* ---------- week panel (proof) ---------- */
+    .panel {
+      margin-top:34px;
       background:
-        radial-gradient(circle at 20% 20%, rgba(255,90,31,0.14), transparent 55%),
-        var(--surface);
-      border-radius: 20px;
-      padding: 56px 40px;
-      text-align: center;
+        radial-gradient(120% 90% at 90% 0%, rgba(255,90,31,.07), transparent 60%),
+        var(--panel);
+      border-radius:22px; padding:30px; border:1px solid var(--hairline);
     }
-    .cta-band p { color: var(--text2); max-width: 34em; margin: 6px auto 28px; }
+    .panel-head { display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:22px; }
+    .panel-head .win { color:var(--text2); font-size:13.5px; }
 
-    /* ======================================================================
-       Footer
-       ====================================================================== */
-    footer {
-      border-top: 1px solid var(--hairline);
-      padding: 32px 0 48px;
-      color: var(--muted);
-      font-size: 14px;
-    }
-    .foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-    .foot .brand .word { font-size: 18px; }
+    .readouts { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:24px; }
+    .readout { background:var(--surface); border-radius:var(--radius); padding:16px 16px 18px; }
+    .readout .rk { display:flex; align-items:center; gap:7px; }
+    .readout .rk .dot { width:8px; height:8px; border-radius:50%; }
+    .readout .num { font-weight:800; font-size:34px; line-height:1.05; margin-top:10px; letter-spacing:-.02em; }
+    .readout .num small { font-size:15px; font-weight:600; color:var(--muted); margin-left:3px; letter-spacing:0; }
 
-    /* ======================================================================
-       Responsive
-       ====================================================================== */
-    @media (max-width: 860px) {
-      .hero-grid { grid-template-columns: 1fr; gap: 8px; }
-      .ring-card { order: -1; margin-bottom: 8px; }
-      .ring-inner { width: 200px; height: 200px; }
-      .ring-center .big { font-size: 58px; }
-      .cards { grid-template-columns: 1fr; }
-      .hero { padding: 48px 0 56px; }
+    .chart { background:var(--surface); border-radius:var(--radius); padding:20px 20px 16px; }
+    .chart-top { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:16px; }
+    .chart-top .goal { color:var(--muted); font-size:12.5px; }
+    .bars { display:grid; grid-template-columns:repeat(7,1fr); gap:12px; align-items:end; height:150px; }
+    .bar-col { display:flex; flex-direction:column; align-items:center; gap:9px; height:100%; justify-content:flex-end; }
+    .bar-track { width:100%; max-width:34px; height:100%; display:flex; align-items:flex-end; border-radius:7px; background:rgba(255,255,255,.03); }
+    .bar { width:100%; border-radius:7px; height:0; transition:height 1s cubic-bezier(.22,.61,.36,1); min-height:3px; }
+    .bar.rest { background:var(--track); }
+    .bar-day { font-size:11px; color:var(--muted); font-weight:600; letter-spacing:.04em; }
+
+    /* ---------- features ---------- */
+    .cards { display:grid; grid-template-columns:repeat(2,1fr); gap:16px; margin-top:32px; }
+    .card { background:var(--surface); border-radius:var(--radius); padding:26px; transition:background .15s ease, transform .15s ease; }
+    .card:hover { background:var(--elevated); transform:translateY(-2px); }
+    .card .ic { width:42px; height:42px; border-radius:11px; background:var(--elevated); display:flex; align-items:center; justify-content:center; margin-bottom:16px; }
+    .card:hover .ic { background:#2f2f2f; }
+    .card .ck { font-size:11.5px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+    .card h3 { font-size:19px; font-weight:700; margin:9px 0 7px; letter-spacing:-.01em; }
+    .card p { color:var(--text2); font-size:14.5px; }
+    .card .dot { width:16px; height:16px; border-radius:5px; }
+
+    /* ---------- coach ---------- */
+    .coach-grid { display:grid; grid-template-columns:.92fr 1.08fr; gap:44px; align-items:center; margin-top:8px; }
+    .chatbox { background:var(--panel); border:1px solid var(--hairline); border-radius:20px; padding:22px; }
+    .chat-hd { display:flex; align-items:center; gap:10px; padding-bottom:16px; margin-bottom:16px; border-bottom:1px solid var(--hairline); }
+    .chat-hd .avatar { width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,var(--strain-a),var(--strain-b)); display:flex; align-items:center; justify-content:center; }
+    .chat-hd .who { font-weight:700; font-size:15px; }
+    .chat-hd .stat { font-size:12px; color:var(--recovery); display:flex; align-items:center; gap:6px; }
+    .chat-hd .stat .dot { width:7px; height:7px; border-radius:50%; background:var(--recovery); }
+    .msgs { display:flex; flex-direction:column; gap:12px; }
+    .msg { max-width:88%; padding:12px 15px; border-radius:14px; font-size:14.5px; line-height:1.45; }
+    .msg.you { align-self:flex-end; background:var(--elevated); border-bottom-right-radius:5px; }
+    .msg.ai { align-self:flex-start; background:var(--surface); border-bottom-left-radius:5px; color:var(--text2); }
+    .msg.ai strong { color:var(--text); font-weight:700; }
+    .msg .tag { display:inline-block; font-size:11px; font-weight:600; color:var(--strain); background:rgba(255,90,31,.12); padding:2px 8px; border-radius:6px; margin-bottom:6px; letter-spacing:.03em; }
+
+    /* ---------- cta band ---------- */
+    .cta-band {
+      margin:20px 0 0;
+      background:radial-gradient(circle at 22% 15%,rgba(255,90,31,.16),transparent 55%),var(--surface);
+      border-radius:24px; padding:60px 40px; text-align:center; border:1px solid var(--hairline);
     }
-    @media (max-width: 520px) {
-      .nav .btn-ghost { padding: 10px 16px; font-size: 15px; }
-      .cta-band { padding: 44px 22px; }
+    .cta-band h2 { font-size:clamp(28px,4.4vw,44px); font-weight:800; letter-spacing:-.025em; margin:12px 0 0; }
+    .cta-band p { color:var(--text2); max-width:34em; margin:14px auto 30px; }
+
+    /* ---------- footer ---------- */
+    footer.foot { border-top:1px solid var(--hairline); padding:34px 0 52px; color:var(--muted); font-size:13.5px; margin-top:56px; }
+    .foot-row { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+    .foot-row .brand .word { font-size:17px; }
+
+    /* ---------- reveal ---------- */
+    .reveal { opacity:0; transform:translateY(18px); transition:opacity .6s ease, transform .6s ease; }
+    .reveal.in { opacity:1; transform:none; }
+
+    @media (max-width:900px) {
+      .hero-grid { grid-template-columns:1fr; gap:20px; }
+      .ring-card { order:-1; justify-content:flex-start; }
+      .coach-grid { grid-template-columns:1fr; gap:26px; }
+      .readouts { grid-template-columns:repeat(2,1fr); }
     }
+    @media (max-width:620px) {
+      .hero { padding:52px 0 30px; }
+      .cards { grid-template-columns:1fr; }
+      .ring-inner { width:230px; height:230px; }
+      .ring-center .big { font-size:66px; }
+      .panel { padding:20px; }
+      .cta-band { padding:46px 22px; }
+      .bars { gap:7px; }
+    }
+    @media (prefers-reduced-motion:reduce) {
+      html { scroll-behavior:auto; }
+      .ring-fill { transition:none; }
+      .bar { transition:none; }
+      .reveal { opacity:1; transform:none; transition:none; }
+      .eyebrow .pulse { animation:none; }
+    }
+    @keyframes pulse {
+      0% { box-shadow:0 0 0 0 rgba(255,90,31,.55); }
+      70% { box-shadow:0 0 0 9px rgba(255,90,31,0); }
+      100% { box-shadow:0 0 0 0 rgba(255,90,31,0); }
+    }
+    .eyebrow .pulse { animation:pulse 2.2s infinite; }
   </style>
 </head>
 <body>
 
-  <!-- =====================================================================
-       NAV
-       ===================================================================== -->
-  <header>
+  <!-- NAV -->
+  <div class="nav-outer">
     <div class="wrap nav">
       <div class="brand">
-        <svg class="mark" width="34" height="34" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <defs>
-            <linearGradient id="markNav" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color="#FF4500"></stop>
-              <stop offset="100%" stop-color="#FF6B00"></stop>
-            </linearGradient>
-          </defs>
+        <svg width="32" height="32" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <defs><linearGradient id="mNav" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF4500"/><stop offset="100%" stop-color="#FF6B00"/></linearGradient></defs>
           <g transform="translate(32,32)">
-            <circle r="24" fill="none" stroke="#2A2A2A" stroke-width="8" stroke-dasharray="113 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
-            <circle r="24" fill="none" stroke="url(#markNav)" stroke-width="8" stroke-dasharray="88 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
+            <circle r="24" fill="none" stroke="#2A2A2A" stroke-width="8" stroke-dasharray="113 150.8" stroke-linecap="round" transform="rotate(135)"/>
+            <circle r="24" fill="none" stroke="url(#mNav)" stroke-width="8" stroke-dasharray="88 150.8" stroke-linecap="round" transform="rotate(135)"/>
           </g>
         </svg>
         <span class="word">Strain</span>
       </div>
-      <!-- APP URL: change this to https://app.<your-domain> once DNS is live -->
-      <a class="btn btn-ghost" href="https://app.example.com/">Log in</a>
+      <div class="nav-actions">
+        <a class="btn btn-ghost" href="https://app.strain.fit/">Log in</a>
+        <a class="btn btn-primary" href="https://app.strain.fit/">Start free</a>
+      </div>
     </div>
-  </header>
+  </div>
 
-  <!-- =====================================================================
-       HERO
-       ===================================================================== -->
+  <!-- HERO -->
   <section class="hero">
     <div class="wrap hero-grid">
       <div>
-        <div class="s-label">Training tracker for combat sports</div>
+        <div class="eyebrow"><span class="pulse"></span><span class="s-label">Training tracker · combat sports</span></div>
         <h1>Every session.<br><span class="accent">Measured.</span></h1>
         <p class="lead">
           Log BJJ, wrestling, MMA, striking, cardio and lifting in seconds.
-          Track your weekly training load and recovery — and let an AI coach
-          turn your logs into your next session.
+          See your weekly training load and recovery at a glance — and let an
+          AI coach turn your logs into your next session.
         </p>
         <div class="hero-cta">
-          <!-- APP URL: change this to https://app.<your-domain> once DNS is live -->
-          <a class="btn btn-primary" href="https://app.example.com/">Start training →</a>
+          <a class="btn btn-primary" href="https://app.strain.fit/">Start training →</a>
           <span class="hero-note">Free · Sign in with Google</span>
         </div>
       </div>
 
-      <!-- Signature ScoreRing: weekly training load vs a 300-min goal.
-           Geometry mirrors _score_ring_html() in main.py (270° arc, 90° gap
-           at the bottom, rotated 135°). -->
       <div class="ring-card">
         <div class="ring-inner">
-          <svg width="260" height="260" style="display:block; transform:rotate(135deg)">
-            <defs>
-              <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#FF4500"></stop>
-                <stop offset="100%" stop-color="#FF6B00"></stop>
-              </linearGradient>
-            </defs>
-            <!-- track: full 270° arc -->
-            <circle cx="130" cy="130" r="119" fill="none" stroke="#2A2A2A"
-              stroke-width="22" stroke-linecap="round"
-              stroke-dasharray="560.8 747.7"></circle>
-            <!-- filled: 247/300 ≈ 82% of the arc -->
-            <circle cx="130" cy="130" r="119" fill="none" stroke="url(#ringGrad)"
-              stroke-width="22" stroke-linecap="round"
-              stroke-dasharray="461.6 747.7"></circle>
+          <svg class="ring-svg" width="278" height="278" viewBox="0 0 278 278" aria-hidden="true">
+            <defs><linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#FF4500"/><stop offset="100%" stop-color="#FF6B00"/></linearGradient></defs>
+            <circle cx="139" cy="139" r="119" fill="none" stroke="#2A2A2A" stroke-width="22" stroke-linecap="round" stroke-dasharray="560.8 747.7"/>
+            <circle class="ring-fill" id="ringFill" cx="139" cy="139" r="119" fill="none" stroke="url(#ringGrad)" stroke-width="22" stroke-linecap="round" stroke-dasharray="461.6 1000" stroke-dashoffset="461.6"/>
           </svg>
           <div class="ring-center">
-            <div class="big">247</div>
+            <div class="big tnum" data-count="247">0</div>
             <div class="s-label">Weekly load</div>
-            <div style="color:var(--text2); font-size:14px; margin-top:2px;">of 300 min goal</div>
+            <div class="sub">of 300 min goal</div>
           </div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- =====================================================================
-       FEATURES
-       ===================================================================== -->
-  <section class="features">
-    <div class="wrap">
-      <div class="s-label">What you get</div>
-      <h2>Built like a performance device.</h2>
-      <p class="section-intro">
-        No clutter, no vanity metrics. The number is the design — everything
-        here exists to tell you how hard you trained and whether you're ready
-        to go again.
-      </p>
+  <!-- DISCIPLINE STRIP -->
+  <section class="wrap strip reveal">
+    <div class="s-label">One tracker — every mat, every rack</div>
+    <div class="chips">
+      <span class="chip"><span class="dot" style="background:#1E88E5"></span>BJJ</span>
+      <span class="chip"><span class="dot" style="background:#42A5F5"></span>Wrestling</span>
+      <span class="chip"><span class="dot" style="background:#FF5A1F"></span>MMA</span>
+      <span class="chip"><span class="dot" style="background:#FF8A3D"></span>Boxing</span>
+      <span class="chip"><span class="dot" style="background:#E64980"></span>Kickboxing</span>
+      <span class="chip"><span class="dot" style="background:#00C853"></span>Cardio</span>
+      <span class="chip"><span class="dot" style="background:#FFD600"></span>Weights</span>
+    </div>
+  </section>
 
-      <div class="cards">
-        <div class="card">
-          <div class="icon"><span class="dot" style="background:var(--grappling)"></span></div>
-          <h3>Log any discipline</h3>
-          <p>Two taps to log BJJ, wrestling, MMA, boxing, kickboxing, cardio or
-             lifting. Drilling and sparring rounds, exercises, notes — captured fast.</p>
+  <!-- WEEK PANEL -->
+  <section class="wrap sec reveal">
+    <div class="s-label">This week</div>
+    <h2>Your training, as one honest number.</h2>
+    <p class="intro">No streak-shaming, no vanity badges. Just how much you did, how recovered you are, and whether you should go again.</p>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div class="s-label" style="color:var(--text2)">Week of Jul 6 – Jul 12</div>
+        <div class="win">5 sessions logged</div>
+      </div>
+
+      <div class="readouts">
+        <div class="readout">
+          <div class="rk"><span class="dot" style="background:var(--strain)"></span><span class="s-label">Load</span></div>
+          <div class="num tnum" data-count="247">0<small>min</small></div>
         </div>
-
-        <div class="card">
-          <div class="icon">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="9" stroke="var(--strain)" stroke-width="2.5" stroke-dasharray="42 14" stroke-linecap="round" transform="rotate(120 12 12)"/>
-            </svg>
-          </div>
-          <h3>Weekly training load</h3>
-          <p>The signature ring shows your load against a goal at a glance —
-             so you know if you're building, coasting, or overreaching.</p>
+        <div class="readout">
+          <div class="rk"><span class="dot" style="background:var(--recovery)"></span><span class="s-label">Recovery</span></div>
+          <div class="num tnum" data-count="68">0<small>%</small></div>
         </div>
-
-        <div class="card">
-          <div class="icon"><span class="dot" style="background:var(--recovery)"></span></div>
-          <h3>Recovery score</h3>
-          <p>Sleep, soreness and rest roll into a daily readiness number — the
-             honest answer to "should I train hard today?"</p>
+        <div class="readout">
+          <div class="rk"><span class="dot" style="background:var(--strength)"></span><span class="s-label">Streak</span></div>
+          <div class="num tnum" data-count="12">0<small>days</small></div>
         </div>
+        <div class="readout">
+          <div class="rk"><span class="dot" style="background:var(--grappling)"></span><span class="s-label">Rounds</span></div>
+          <div class="num tnum" data-count="34">0</div>
+        </div>
+      </div>
 
-        <div class="card">
-          <div class="icon">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-              <path d="M12 3v3M12 18v3M5 12H2M22 12h-3M6 6l-2-2M20 20l-2-2M6 18l-2 2M20 4l-2 2" stroke="var(--strain)" stroke-width="2" stroke-linecap="round"/>
-              <circle cx="12" cy="12" r="4" stroke="var(--strain)" stroke-width="2"/>
-            </svg>
-          </div>
-          <h3>AI coach</h3>
-          <p>Chat with a coach that reads your actual logs, tells you what to
-             work on next — and can even log a session for you as you talk.</p>
+      <div class="chart">
+        <div class="chart-top">
+          <span class="s-label" style="color:var(--text2)">Daily load</span>
+          <span class="goal">goal · 300 min / wk</span>
+        </div>
+        <div class="bars" id="bars">
+          <div class="bar-col"><div class="bar-track"><div class="bar" style="background:#1E88E5" data-h="89"></div></div><span class="bar-day">Mon</span></div>
+          <div class="bar-col"><div class="bar-track"><div class="bar" style="background:#FFD600" data-h="65"></div></div><span class="bar-day">Tue</span></div>
+          <div class="bar-col"><div class="bar-track"><div class="bar rest" data-h="4"></div></div><span class="bar-day">Wed</span></div>
+          <div class="bar-col"><div class="bar-track"><div class="bar" style="background:#1E88E5" data-h="97"></div></div><span class="bar-day">Thu</span></div>
+          <div class="bar-col"><div class="bar-track"><div class="bar" style="background:#00C853" data-h="48"></div></div><span class="bar-day">Fri</span></div>
+          <div class="bar-col"><div class="bar-track"><div class="bar" style="background:#FF5A1F" data-h="100"></div></div><span class="bar-day">Sat</span></div>
+          <div class="bar-col"><div class="bar-track"><div class="bar rest" data-h="4"></div></div><span class="bar-day">Sun</span></div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- =====================================================================
-       DISCIPLINE STRIP
-       ===================================================================== -->
-  <section class="disciplines">
-    <div class="wrap">
-      <div class="s-label">One tracker, every mat and every rack</div>
-      <div class="chips">
-        <span class="chip"><span class="dot" style="background:#1E88E5"></span> BJJ</span>
-        <span class="chip"><span class="dot" style="background:#42A5F5"></span> Wrestling</span>
-        <span class="chip"><span class="dot" style="background:#FF5A1F"></span> MMA</span>
-        <span class="chip"><span class="dot" style="background:#FF8A3D"></span> Boxing</span>
-        <span class="chip"><span class="dot" style="background:#E64980"></span> Kickboxing</span>
-        <span class="chip"><span class="dot" style="background:#00C853"></span> Cardio</span>
-        <span class="chip"><span class="dot" style="background:#FFD600"></span> Weights</span>
+  <!-- FEATURES -->
+  <section class="wrap sec reveal">
+    <div class="s-label">What you get</div>
+    <h2>Built like a performance device.</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="ic"><span class="dot" style="background:var(--grappling)"></span></div>
+        <div class="ck">Log</div>
+        <h3>Any discipline, two taps</h3>
+        <p>BJJ, wrestling, MMA, boxing, kickboxing, cardio or lifting. Drilling and sparring rounds, exercises, notes — captured before you leave the mat.</p>
+      </div>
+      <div class="card">
+        <div class="ic">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="#FF5A1F" stroke-width="2.5" stroke-dasharray="42 14" stroke-linecap="round" transform="rotate(120 12 12)"/></svg>
+        </div>
+        <div class="ck">Measure</div>
+        <h3>Weekly training load</h3>
+        <p>The signature ring shows your load against a goal at a glance — so you know if you're building, coasting, or overreaching.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><span class="dot" style="background:var(--recovery)"></span></div>
+        <div class="ck">Recover</div>
+        <h3>Daily readiness score</h3>
+        <p>Sleep, soreness and rest roll into one number — the honest answer to "should I train hard today?"</p>
+      </div>
+      <div class="card">
+        <div class="ic">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v3M12 18v3M5 12H2M22 12h-3M6 6l-2-2M20 20l-2-2M6 18l-2 2M20 4l-2 2" stroke="#FF5A1F" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="4" stroke="#FF5A1F" stroke-width="2"/></svg>
+        </div>
+        <div class="ck">Coach</div>
+        <h3>An AI that reads your logs</h3>
+        <p>Chat with a coach that knows your actual sessions, tells you what to work on next — and can log a session for you as you talk.</p>
       </div>
     </div>
   </section>
 
-  <!-- =====================================================================
-       FINAL CTA
-       ===================================================================== -->
+  <!-- COACH -->
+  <section class="wrap sec reveal">
+    <div class="coach-grid">
+      <div>
+        <div class="s-label">The coach</div>
+        <h2 style="margin-bottom:16px;">It's read every session you've logged.</h2>
+        <p class="intro" style="margin-top:0;">Most trackers give you charts and leave you to figure it out. Strain's coach reads your real data and answers in plain language — then can write the next session straight into your log.</p>
+      </div>
+
+      <div class="chatbox">
+        <div class="chat-hd">
+          <div class="avatar">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="4" stroke="#fff" stroke-width="2"/><path d="M12 3v3M12 18v3M5 12H2M22 12h-3" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
+          </div>
+          <div>
+            <div class="who">Strain Coach</div>
+            <div class="stat"><span class="dot"></span>Reading 5 sessions this week</div>
+          </div>
+        </div>
+        <div class="msgs">
+          <div class="msg you">What should I focus on this week?</div>
+          <div class="msg ai">
+            <span class="tag">Looking at your logs</span>
+            You've drilled guard three times but only sparred <strong>once</strong>. Your load's at <strong>247 / 300</strong> and recovery is <strong>68%</strong> — room for one hard round. Do a live-rounds session Thursday, keep Sunday off.
+          </div>
+          <div class="msg you">Log 5 rounds of BJJ sparring for today.</div>
+          <div class="msg ai"><span class="tag">Logged ✓</span>Done — 5 rounds sparring added. That puts you at <strong>289 / 300</strong> for the week.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
   <section class="wrap">
-    <div class="cta-band">
+    <div class="cta-band reveal">
       <div class="s-label">Start today</div>
       <h2>Know your strain.</h2>
-      <p>Your first session takes under a minute to log. Sign in with Google
-         and start building the picture.</p>
-      <!-- APP URL: change this to https://app.<your-domain> once DNS is live -->
-      <a class="btn btn-primary" href="https://app.example.com/">Start training →</a>
+      <p>Your first session takes under a minute to log. Sign in with Google and start building the picture.</p>
+      <a class="btn btn-primary" href="https://app.strain.fit/">Start training →</a>
     </div>
   </section>
 
-  <!-- =====================================================================
-       FOOTER
-       ===================================================================== -->
-  <footer>
-    <div class="wrap foot">
+  <!-- FOOTER -->
+  <footer class="foot">
+    <div class="wrap foot-row">
       <div class="brand">
-        <svg class="mark" width="26" height="26" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <defs>
-            <linearGradient id="markFoot" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color="#FF4500"></stop>
-              <stop offset="100%" stop-color="#FF6B00"></stop>
-            </linearGradient>
-          </defs>
+        <svg width="24" height="24" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <defs><linearGradient id="mFoot" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF4500"/><stop offset="100%" stop-color="#FF6B00"/></linearGradient></defs>
           <g transform="translate(32,32)">
-            <circle r="24" fill="none" stroke="#2A2A2A" stroke-width="8" stroke-dasharray="113 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
-            <circle r="24" fill="none" stroke="url(#markFoot)" stroke-width="8" stroke-dasharray="88 150.8" stroke-linecap="round" transform="rotate(135)"></circle>
+            <circle r="24" fill="none" stroke="#2A2A2A" stroke-width="8" stroke-dasharray="113 150.8" stroke-linecap="round" transform="rotate(135)"/>
+            <circle r="24" fill="none" stroke="url(#mFoot)" stroke-width="8" stroke-dasharray="88 150.8" stroke-linecap="round" transform="rotate(135)"/>
           </g>
         </svg>
         <span class="word">Strain</span>
       </div>
-      <div>© 2026 Strain · A personal training tracker</div>
+      <div>© 2026 Strain · A training tracker for combat sports</div>
     </div>
   </footer>
 
+  <script>
+    (function () {
+      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      function countUp(el) {
+        var target = parseInt(el.getAttribute('data-count'), 10);
+        var small = el.querySelector('small');
+        var suffix = small ? small.outerHTML : '';
+        if (reduce) { el.innerHTML = target + suffix; return; }
+        var start = null, dur = 1200;
+        function step(ts) {
+          if (!start) start = ts;
+          var p = Math.min((ts - start) / dur, 1);
+          var eased = 1 - Math.pow(1 - p, 3);
+          el.innerHTML = Math.round(target * eased) + suffix;
+          if (p < 1) requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+      }
+
+      function fillRing() {
+        var r = document.getElementById('ringFill');
+        if (r) r.setAttribute('stroke-dashoffset', '0');
+      }
+      function growBars() {
+        var bars = document.querySelectorAll('#bars .bar');
+        bars.forEach(function (b, i) {
+          var h = b.getAttribute('data-h');
+          setTimeout(function () { b.style.height = h + '%'; }, reduce ? 0 : 120 + i * 70);
+        });
+      }
+
+      window.addEventListener('load', function () {
+        fillRing();
+        var heroBig = document.querySelector('.ring-center .big');
+        if (heroBig) countUp(heroBig);
+      });
+
+      var seen = false;
+      if ('IntersectionObserver' in window) {
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (e) {
+            if (e.isIntersecting) {
+              e.target.classList.add('in');
+              if (e.target.querySelector && e.target.querySelector('#bars') && !seen) {
+                seen = true;
+                growBars();
+                e.target.querySelectorAll('.readout .num').forEach(countUp);
+              }
+            }
+          });
+        }, { threshold: 0.18 });
+        document.querySelectorAll('.reveal').forEach(function (el) { io.observe(el); });
+      } else {
+        document.querySelectorAll('.reveal').forEach(function (el) { el.classList.add('in'); });
+        growBars();
+      }
+    })();
+  </script>
 </body>
 </html>

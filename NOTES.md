@@ -214,21 +214,57 @@ bash setup-gcp.sh      # <-- Step 4 is the FAIL-FAST GATE
 
 ## Next steps — public launch (custom domain + marketing page)
 
-### 0. Blocker to resolve first: Cloud Run "Forbidden" org policy
+### ✅ LAUNCHED (2026-07-10)
+The public launch is live:
+- **strain.fit** → marketing landing page (Cloudflare Pages project `strain-marketing`).
+- **app.strain.fit** → the app (Cloudflare Worker `strain-proxy` → private Cloud Run via WIF).
+- **www.strain.fit** → marketing page (attached; cert may lag a few min after apex).
+- Cloudflare account: personal (elias.oc.2007@gmail.com). Domain: GoDaddy → Cloudflare NS.
+- Marketing page was redesigned (instrument-panel layout) and deployed via
+  `wrangler pages deploy` from `marketing/`.
+- Redeploy app: push to main (GitHub Actions). Redeploy marketing:
+  `cd marketing && npx wrangler pages deploy . --project-name=strain-marketing --branch=main`.
+
+### CURRENT STATUS — historical (as of 2026-07-09)
+Domain is **strain.fit** (registered at GoDaddy). Cloudflare account is
+**personal** (elias.oc.2007@gmail.com), NOT Atheal — the app works fine as a
+cross-account setup (personal Cloudflare → Atheal GCP); only long-term backend
+ownership depends on GCP, not Cloudflare.
+
+Done:
+- [x] **Blocker RESOLVED** — not via IAP. Went with a Cloudflare Worker that
+  authenticates to the PRIVATE Cloud Run via WIF (no SA key, no `allUsers`).
+  See `cloudflare-proxy/`. Ran `setup-gcp.sh` — the Step-4 fail-fast gate
+  PASSED (org policy did NOT block the token-creator binding).
+- [x] `wrangler.toml` filled in: `CLOUD_RUN_URL` =
+  `https://bjj-tracker-6otadxxc2a-ew.a.run.app`, route = `app.strain.fit/*`.
+- [x] `marketing/index.html` — 3 CTA links updated to `https://app.strain.fit/`.
+- [x] strain.fit added to Cloudflare (Free); GoDaddy nameservers changed to
+  Cloudflare's.
+
+Waiting / next (resume here in a couple hours):
+- [ ] Cloudflare zone to go **Active** (nameserver propagation — was still
+  showing GoDaddy `domaincontrol.com` when we stopped). Check:
+  `nslookup -type=NS strain.fit 8.8.8.8` → should show `*.ns.cloudflare.com`.
+- [ ] `npx wrangler login` + `npx wrangler secret put PRIVATE_KEY_PEM < priv.pem`
+  (can do before Active) then `npx wrangler deploy` (needs Active).
+- [ ] Add DNS record: `AAAA`, name `app`, `100::`, **PROXIED / orange**.
+- [ ] Firebase → Auth → Settings → Authorized domains → add `app.strain.fit`.
+- [ ] Marketing page → Cloudflare Pages, output dir `marketing`, apex + `www`.
+- [ ] NOTE: uncommitted changes on branch (`wrangler.toml`, `marketing/index.html`,
+  this file) — commit when ready.
+
+### 0. (HISTORICAL) Original blocker: Cloud Run "Forbidden" org policy
+- Resolved by the Worker approach above. Left here for context.
 - `deploy.yml` already passes `--allow-unauthenticated`, but Atheal's GCP org
   policy strips the `allUsers` invoker binding anyway — so even signed-in
   users hit "Forbidden" before Firebase Auth ever runs (see Gotchas above).
 - A custom domain does **not** fix this — it's an IAM-layer block, upstream
-  of the app. Pick one:
+  of the app. Options considered:
   - **Identity-Aware Proxy (IAP)** in front of Cloud Run — gates the request
-    with a Google-account check before it reaches the container; works even
-    under the org policy since IAP grants specific principals instead of
-    `allUsers`.
-  - Ask an org admin for an exception on this project's org policy
-    (the constraint blocking `allUsers` + `roles/run.invoker`, e.g.
-    `iam.allowedPolicyMemberDomains`).
-- Without one of these, a pretty domain just gives "Forbidden" a nicer URL —
-  do this before investing in DNS/marketing work below.
+    with a Google-account check before it reaches the container.
+  - Ask an org admin for an exception on the org policy.
+  - **Cloudflare Worker + WIF (CHOSEN)** — see `cloudflare-proxy/README.md`.
 
 ### 1. Domain + Cloudflare DNS
 - Point the domain's nameservers at Cloudflare (Cloudflare becomes the DNS host).
@@ -268,7 +304,8 @@ bash setup-gcp.sh      # <-- Step 4 is the FAIL-FAST GATE
 | Record | Host | Value | Proxy status | Purpose |
 |---|---|---|---|---|
 | TXT | `@` or host Google gives you | `google-site-verification=...` | n/a | prove domain ownership to Search Console |
-| CNAME | `app` | `ghs.googlehosted.com` (or whatever `gcloud domain-mappings create` prints) | **DNS only (grey)** | routes `app.<domain>` to Cloud Run |
+| ~~CNAME~~ | `app` | ~~`ghs.googlehosted.com`~~ | ~~DNS only (grey)~~ | SUPERSEDED — see below |
+| AAAA | `app` | `100::` (dummy) | **PROXIED (orange)** | Worker approach: route intercepts; must be orange so the Worker runs |
 | A/AAAA (apex) or CNAME (`www`) | `@` / `www` | Cloudflare Pages target | proxied (orange) is fine | serves the marketing page |
 
 ---

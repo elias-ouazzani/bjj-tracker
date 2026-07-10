@@ -21,6 +21,10 @@ cloudflare-proxy/jwks.json
 priv.pem
 jwks.json
 
+# Wrangler build cache
+.wrangler/
+**/.wrangler/
+
 # IDE
 .vscode/
 .idea/
