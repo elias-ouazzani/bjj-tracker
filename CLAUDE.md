@@ -2,9 +2,9 @@
 
 Personal BJJ training session log. Built with NiceGUI + Firestore + Pydantic AI.
 
-> **Active work:** public-launch effort (custom domain + marketing page). Current
-> state, the org-policy blocker, and the exact next command live in
-> `NOTES.md` → "⏸ LAUNCH STATUS — pick up here". Read that first when resuming.
+> **Launched (2026-07-10):** live at **strain.fit** (marketing, Cloudflare Pages)
+> → **app.strain.fit** (app, Cloudflare Worker → private Cloud Run via WIF). See
+> `NOTES.md` → "✅ LAUNCHED (2026-07-10)" for architecture + redeploy commands.
 
 ## Stack
 - Python 3.11+

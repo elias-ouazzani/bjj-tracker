@@ -4,10 +4,16 @@ Personal cheat sheet for every tool, library, and concept used in this project. 
 
 ---
 
-## ⏸ LAUNCH STATUS — pick up here (last updated 2026-07-08)
+## ✅ LAUNCH STATUS — DONE (launched 2026-07-10)
 
-**Goal:** make the app publicly reachable on a custom domain with a marketing
-page in front. Working branch: `claude/strain-project-next-steps-pqn8hg`.
+> **Superseded.** The launch is live: **strain.fit** (marketing) → **app.strain.fit**
+> (app). The block below is the pre-launch plan, kept for history. Step 4 of
+> `setup-gcp.sh` PASSED (org did NOT block it), so the "migrate to personal GCP"
+> fallback was never needed. Full launch detail + redeploy commands are in the
+> "✅ LAUNCHED (2026-07-10)" section further down.
+
+**Goal (pre-launch):** make the app publicly reachable on a custom domain with a
+marketing page in front. Working branch: `claude/strain-project-next-steps-pqn8hg`.
 
 **Done:**
 - Domain bought (on Cloudflare as DNS host).
