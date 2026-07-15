@@ -28,6 +28,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("strain.main")
 
+import analytics
 from ai import extract_tags
 from auth import verify_id_token
 from coach import build_coach_context, coach_reply
@@ -304,6 +305,13 @@ async def auth_callback(request: Request):
     log.info("auth/callback: verified uid=%s email=%s gcal_token=%s",
              decoded["uid"], decoded.get("email"),
              "present" if google_access_token else "absent")
+    # Analytics: record the login and attach who this uid is (email/name) as
+    # durable person properties via $set — this is our "identify".
+    analytics.capture("logged_in", decoded["uid"], {
+        "login_method": "google",
+        "connected_calendar": bool(google_access_token),
+        "$set": {"email": decoded.get("email"), "name": decoded.get("name")},
+    })
     response = JSONResponse({"ok": True, "uid": decoded["uid"]})
     response.set_cookie(
         AUTH_COOKIE_NAME,
@@ -1417,6 +1425,14 @@ def index(request: Request) -> None:
                         "session.save uid=%s id=%s discipline=%s ms=%.0f",
                         current_user_id, saved.id, d, (time.perf_counter() - t0) * 1000,
                     )
+                    # Analytics: the core engagement event. is_edit distinguishes a
+                    # brand-new log from editing an existing one (only new logs count
+                    # toward "did the user train").
+                    analytics.capture("session_logged", current_user_id, {
+                        "discipline": d,
+                        "session_id": saved.id,
+                        "is_edit": editing_id["value"] is not None,
+                    })
                     ui.notify("Saved", color="positive")
                     editing_id["value"] = None
                     reset_form()
@@ -1530,6 +1546,11 @@ def index(request: Request) -> None:
                         ui.notify("Couldn't save your recovery log — please try again.",
                                   color="negative")
                         return
+                    # Analytics: the secondary habit — do people track recovery too?
+                    analytics.capture("recovery_logged", current_user_id, {
+                        "sleep_hours": sleep,
+                        "activity_count": len(acts),
+                    })
                     ui.notify("Saved", color="positive")
                     reset_recovery_form()
                     stats_panel.refresh()
@@ -1784,6 +1805,12 @@ def index(request: Request) -> None:
                     chat_state["busy"] = True
                     chat_input.value = ""
                     add_bubble(msg, me=True)
+                    # Analytics: AI-coach adoption. We send length + whether it's the
+                    # first turn, never the message content (it can be personal).
+                    analytics.capture("coach_message_sent", current_user_id, {
+                        "message_length": len(msg),
+                        "first_turn": chat_state["messages"] is None,
+                    })
 
                     with messages_col:
                         with ui.row().classes("w-full justify-start") as thinking:
