@@ -306,13 +306,85 @@ Waiting / next (resume here in a couple hours):
   today's authenticated home to e.g. `/app`. More work, one less moving part
   to host/deploy.
 
-### 3. DNS record cheat sheet (Cloudflare)
-| Record | Host | Value | Proxy status | Purpose |
+### 3. DNS — concepts + the records THIS project needs
+
+**What DNS is:** the internet's phone book. People type a name
+(`strain.fit`); machines need an address to connect. DNS is the lookup that
+turns name → address. Each entry is a **record** (one line in the phone book).
+
+**Nameservers:** the servers that hold your domain's phone book. Putting the
+domain "on Cloudflare" = changing the nameservers *at the registrar* to
+Cloudflare's two, so Cloudflare becomes the authority for every record.
+
+**Record types you touch here:**
+| Type | Maps a name to… | Example |
+|---|---|---|
+| `A` | an IPv4 address | `strain.fit` → `192.0.2.1` |
+| `AAAA` | an IPv6 address | `app.strain.fit` → `100::` (dummy, see below) |
+| `CNAME` | another *name* (an alias) | `www.strain.fit` → `strain.fit` |
+| `TXT` | free text (used for verification) | `google-site-verification=…` |
+
+**Apex vs subdomain:** the apex/root is the bare domain (`strain.fit`, host
+`@`). A subdomain is a prefix (`app.strain.fit`, host `app`). Gotcha: a real
+`CNAME` isn't valid at the apex — apex needs `A`/`AAAA` (Cloudflare fakes apex
+CNAMEs with "CNAME flattening", so on Cloudflare it works anyway).
+
+**Cloudflare proxy status — orange vs grey (the thing that trips everyone up):**
+- **Proxied (orange cloud):** traffic flows *through* Cloudflare's edge —
+  needed to run a **Worker**, gives caching + hides the origin. Cloudflare
+  serves the TLS cert.
+- **DNS only (grey cloud):** Cloudflare just answers the lookup and steps out
+  of the way — the origin serves its own TLS cert.
+- Rule of thumb: **need a Worker or Cloudflare TLS → orange. Origin manages its
+  own cert (e.g. raw Cloud Run domain mapping) → grey.**
+
+**TTL / propagation:** TTL = how long resolvers cache a record. Changes aren't
+instant — a few minutes typically, up to 24–48h for nameserver changes. Don't
+panic if a new record isn't live immediately.
+
+**The records this project actually needs (CURRENT plan — Worker proxy):**
+| Record | Host | Value | Proxy | Purpose |
 |---|---|---|---|---|
-| TXT | `@` or host Google gives you | `google-site-verification=...` | n/a | prove domain ownership to Search Console |
-| ~~CNAME~~ | `app` | ~~`ghs.googlehosted.com`~~ | ~~DNS only (grey)~~ | SUPERSEDED — see below |
-| AAAA | `app` | `100::` (dummy) | **PROXIED (orange)** | Worker approach: route intercepts; must be orange so the Worker runs |
-| A/AAAA (apex) or CNAME (`www`) | `@` / `www` | Cloudflare Pages target | proxied (orange) is fine | serves the marketing page |
+| ~~CNAME~~ | `app` | ~~`ghs.googlehosted.com`~~ | ~~DNS only (grey)~~ | SUPERSEDED — direct Cloud Run mapping, abandoned (org blocks public Cloud Run) |
+| AAAA | `app` | `100::` (dummy) | **PROXIED (orange)** | Worker path (what we use): the route intercepts `app.strain.fit`; value is a placeholder, must be orange so the Worker runs |
+| A/AAAA (apex) or CNAME (`www`) | `@` / `www` | auto-set by Cloudflare Pages | proxied (orange) | serves the marketing page |
+
+> On the Worker path there is **no Search Console TXT step** — that only
+> belonged to the abandoned direct domain-mapping approach (which would come
+> back if we ever migrate to a personal GCP project).
+
+### 4. Other important concepts (from the launch work)
+
+**Org policy constraints (why we can't just go public):** an *organization*
+(Atheal) can enforce rules on every project inside it. Two bit us:
+- `iam.managed.allowedPolicyMembers` — restricts *which identities* can be
+  granted roles. Blocks adding `allUsers` (anonymous public) → the "Forbidden".
+- `iam.disableServiceAccountKeyCreation` — blocks downloading SA JSON keys.
+- Key insight: these are enforced at **Google's edge, before the app runs**, so
+  no DNS/proxy trick bypasses them. You either get an exception, or move to a
+  project with no org (personal account).
+
+**The Worker proxy trick (public edge, private backend):** the app can still
+go public *without* violating either policy:
+- Cloud Run stays **private** (no `allUsers`).
+- A **Cloudflare Worker** at `app.<domain>` authenticates *itself* to Cloud Run
+  on every request and forwards the traffic. Public visitors only ever talk to
+  Cloudflare; Cloudflare talks to Google as an authorized identity.
+
+**Workload Identity Federation (WIF) — the "no key" part:** normally you'd
+prove identity to Google with a downloaded key (blocked). WIF instead lets an
+*external* identity be trusted: the Worker **self-signs a token with its own
+keypair** (we generate it — `gen-keys.mjs`), GCP verifies it against the public
+half (`jwks.json`), and hands back a short-lived Google token. No GCP-issued
+key ever exists → `disableServiceAccountKeyCreation` never applies. This is the
+**same mechanism GitHub Actions already uses to deploy** (`deploy.yml`'s
+`workload_identity_provider`), which is why it should slip past the org policy.
+
+**OIDC token exchange (the 3 hops in `worker.js`):**
+1. Worker signs a JWT → 2. trades it at Google **STS** for a federated access
+token → 3. uses that to **impersonate** the runtime SA and mint a Cloud
+Run-scoped **ID token** → attaches it as `Authorization: Bearer` and forwards.
+The ID token is cached ~50 min so most requests skip the dance.
 
 ---
 
