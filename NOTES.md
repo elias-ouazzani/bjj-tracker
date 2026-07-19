@@ -56,6 +56,63 @@ bash setup-gcp.sh      # <-- Step 4 is the FAIL-FAST GATE
 
 ---
 
+## 🗺 ROADMAP — post-launch (next steps)
+
+Recommended order (reordered from the raw list so dependencies line up):
+
+1. **Feature flags** *(S — do first)* — gate every feature below behind a flag
+   so new work ships dark and flips on per-user. Detailed steps ↓.
+2. **Centralized API** *(L — pulled earlier than listed)* — the app is a NiceGUI
+   *monolith* (UI + logic in `main.py`). Extract a real API (FastAPI, already
+   under NiceGUI) so web + mobile + agent share one backend. **Prerequisite for
+   the mobile app** — do it before React Native, not after.
+3. **Analytics dashboard** *(M)* — builds on `charts.py` aggregations; gate it
+   with a flag.
+4. **Admin site** at `admin.strain.fit` *(M)* — new Cloudflare Pages/Worker +
+   route; reuse the existing proxy pattern in `cloudflare-proxy/`.
+5. **Secure admin site** with Cloudflare Zero Trust *(S)* — do this *with* #4,
+   never expose admin unprotected even briefly.
+6. **Mobile app** (React Native) *(XL)* — last + largest; only sensible once the
+   shared API (#2) exists.
+
+Key dependency: **mobile (#6) depends on the API (#2)**. Building mobile against
+the monolith first means ripping it apart later.
+
+### Feature flags — implementation steps
+
+Goal: `flag_on("analytics_dashboard", user_id)` returns a bool; wrap any new UI
+or route in it. Keep it dead simple (no third-party service).
+
+1. **Model** (`models.py`) — a `FeatureFlag` Pydantic model:
+   `key: str`, `enabled: bool` (global on/off), `enabled_for: list[str]`
+   (allow-list of user_ids for gradual rollout), `description: str`.
+2. **Storage** (`db.py`) — a `feature_flags` collection, doc ID = flag `key`.
+   Add `get_flag(key)`, `list_flags()`, `set_flag(FeatureFlag)` mirroring the
+   existing `save_session`/`get_session` pattern (reuse `_client()`).
+3. **Cache** — wrap the flag read in a short TTL cache (e.g. 60s) so every page
+   render doesn't hit Firestore. Simple: module-level dict + timestamp, or
+   `functools.lru_cache` cleared on `set_flag`. Flags are read constantly,
+   written rarely.
+4. **Service** (`services/flags.py`) — `flag_on(key, user_id) -> bool`:
+   return `False` if the flag doc is missing (safe default = off); `True` if
+   `enabled` globally OR `user_id in enabled_for`. One place, easy to test.
+5. **Env override for local dev** — let `FLAG_<KEY>=1` env vars force a flag on
+   locally so you can develop without touching Firestore. Check env first in
+   `flag_on`.
+6. **Use it** — wrap new features: `if flag_on("analytics_dashboard", user):
+   render_dashboard()`. Also gate the *nav tab* so hidden features don't show.
+7. **Admin toggle** — for now flip flags by editing the Firestore doc (or a
+   tiny `set_flag` script); later the Admin site (#4) gets a real toggle UI.
+8. **Tests** (`tests/test_flags.py`) — off-by-default, global-on, per-user
+   allow-list, env override. Mock Firestore like the other db tests. Keep the
+   95% coverage gate green.
+
+Rollout pattern: ship feature dark (`enabled=False`) → add your own `user_id`
+to `enabled_for` to dogfood → flip `enabled=True` when ready → delete the flag
+once stable.
+
+---
+
 ## Tools and libraries
 
 ### Pydantic
