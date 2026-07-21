@@ -71,4 +71,4 @@ jobs:
             --allow-unauthenticated \
             --service-account ${{ secrets.GCP_SERVICE_ACCOUNT }} \
             --set-secrets "ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,STORAGE_SECRET=STORAGE_SECRET:latest" \
-            --set-env-vars "FIRESTORE_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }},LOG_LEVEL=DEBUG"
+            --set-env-vars "FIRESTORE_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }},LOG_LEVEL=DEBUG,POSTHOG_API_KEY=phc_nTVMK8JYKthjZvD6D8feJaKk7yWnGP9HiVvaBAwvxmpf,POSTHOG_HOST=https://us.i.posthog.com"

@@ -29,7 +29,9 @@ from functools import lru_cache
 
 log = logging.getLogger("strain.flags")
 
-DEFAULT_HOST = "https://eu.i.posthog.com"
+# Our PostHog project lives in the US region. If you migrate the project to EU,
+# change this (and POSTHOG_HOST in deploy.yml) to https://eu.i.posthog.com.
+DEFAULT_HOST = "https://us.i.posthog.com"
 
 
 def _env_override(key: str) -> bool | None:
