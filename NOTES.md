@@ -78,38 +78,42 @@ Recommended order (reordered from the raw list so dependencies line up):
 Key dependency: **mobile (#6) depends on the API (#2)**. Building mobile against
 the monolith first means ripping it apart later.
 
-### Feature flags — implementation steps
+### Feature flags — DONE via PostHog (Hassan's recommendation)
 
-Goal: `flag_on("analytics_dashboard", user_id)` returns a bool; wrap any new UI
-or route in it. Keep it dead simple (no third-party service).
+Chose **PostHog** over a homegrown Firestore/Cloudflare-KV flag store — it does
+feature flags *and* product analytics, so it also seeds roadmap item #3. Flags
+are managed in the PostHog dashboard (no redeploy to flip); the app just asks
+"is this on for this user?".
 
-1. **Model** (`models.py`) — a `FeatureFlag` Pydantic model:
-   `key: str`, `enabled: bool` (global on/off), `enabled_for: list[str]`
-   (allow-list of user_ids for gradual rollout), `description: str`.
-2. **Storage** (`db.py`) — a `feature_flags` collection, doc ID = flag `key`.
-   Add `get_flag(key)`, `list_flags()`, `set_flag(FeatureFlag)` mirroring the
-   existing `save_session`/`get_session` pattern (reuse `_client()`).
-3. **Cache** — wrap the flag read in a short TTL cache (e.g. 60s) so every page
-   render doesn't hit Firestore. Simple: module-level dict + timestamp, or
-   `functools.lru_cache` cleared on `set_flag`. Flags are read constantly,
-   written rarely.
-4. **Service** (`services/flags.py`) — `flag_on(key, user_id) -> bool`:
-   return `False` if the flag doc is missing (safe default = off); `True` if
-   `enabled` globally OR `user_id in enabled_for`. One place, easy to test.
-5. **Env override for local dev** — let `FLAG_<KEY>=1` env vars force a flag on
-   locally so you can develop without touching Firestore. Check env first in
-   `flag_on`.
-6. **Use it** — wrap new features: `if flag_on("analytics_dashboard", user):
-   render_dashboard()`. Also gate the *nav tab* so hidden features don't show.
-7. **Admin toggle** — for now flip flags by editing the Firestore doc (or a
-   tiny `set_flag` script); later the Admin site (#4) gets a real toggle UI.
-8. **Tests** (`tests/test_flags.py`) — off-by-default, global-on, per-user
-   allow-list, env override. Mock Firestore like the other db tests. Keep the
-   95% coverage gate green.
+**Built (`services/flags.py`):** `flag_on(key, user_id, email) -> bool`.
+- Evaluation order: `FLAG_<KEY>` env override → PostHog → **False** (safe default).
+- Safe default OFF if PostHog is unconfigured / unreachable / errors — a missing
+  flag hides the feature, never crashes.
+- Lazy, `lru_cache`d client (like `ai.py`'s agent). Local evaluation when
+  `POSTHOG_PERSONAL_API_KEY` is set (no per-render network hop).
+- EU host by default (`https://eu.i.posthog.com`) — GDPR, matches Firestore eur3.
 
-Rollout pattern: ship feature dark (`enabled=False`) → add your own `user_id`
-to `enabled_for` to dogfood → flip `enabled=True` when ready → delete the flag
-once stable.
+**Env vars** (see `.env.example`): `POSTHOG_API_KEY`,
+`POSTHOG_PERSONAL_API_KEY`, `POSTHOG_HOST`. Local dev: `FLAG_TRAINING_STREAK=1`.
+
+**First flagged feature — `training_streak`:** a "Streak & milestones" card on
+Home (streak number + earned badges at 3/7/14/30/60/100/365 days + progress to
+next). Pure helper `charts.streak_milestones(streak)`; gated in `main.py` by
+`flag_on("training_streak", uid, email)`. Tests: `tests/test_flags.py` (mocked
+PostHog client) + `TestStreakMilestones` in `tests/test_charts.py`. Suite green
+at 97% coverage.
+
+**PostHog UI setup:** Feature Flags → New → *Targeted release* → key
+`training_streak` → release condition email = your email → Save. Then flip wider
+(percentage rollout / 100%) when ready. Two keys live in Secret Manager →
+Cloud Run (add to `deploy.yml --set-secrets` before it works in prod).
+
+Rollout pattern: ship dark (flag off) → target *yourself* to dogfood in prod →
+percentage-roll-out → 100% → delete the flag once stable.
+
+**Still TODO to go live in prod:** add `POSTHOG_API_KEY` +
+`POSTHOG_PERSONAL_API_KEY` to Secret Manager and to `deploy.yml`'s
+`--set-secrets`, and create the `training_streak` flag in PostHog.
 
 ---
 

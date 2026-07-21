@@ -34,10 +34,12 @@ from charts import (
     current_streak,
     discipline_totals,
     recovery_score_on,
+    streak_milestones,
     total_minutes,
     weekly_discipline_minutes,
     weekly_recovery_score,
 )
+from services.flags import flag_on
 from services.sessions import (
     SessionAccessDenied,
     SessionNotFound,
@@ -755,6 +757,7 @@ def index(request: Request) -> None:
 
     current_user_id: str = auth_session["uid"]
     current_user_name: str = auth_session.get("name", "user")
+    current_user_email: str = auth_session.get("email", "")
 
     _inject_firebase_sdk()
     _apply_theme()
@@ -906,6 +909,46 @@ def index(request: Request) -> None:
                         _kpi_card("Streak", streak, unit="days", color=STRAIN, pulse=True)
                         _kpi_card("Sessions", sessions_30d, color=TEXT)
                         _kpi_card("Total · 30d", total_min, unit="min", color=TEXT)
+
+                    # ---- Streak & milestones (feature-flagged: training_streak) ----
+                    if flag_on("training_streak", current_user_id, current_user_email):
+                        ms = streak_milestones(streak)
+                        with ui.card().classes("w-full p-5").style(f"background-color: {SURFACE}"):
+                            ui.label("Streak & milestones").classes("s-section").style("margin-bottom: 14px;")
+                            with ui.row().classes("items-center gap-6 w-full no-wrap"):
+                                with ui.column().classes("gap-0 items-center").style("min-width: 92px;"):
+                                    ui.label(str(ms["streak"])).classes("s-stat") \
+                                        .style(f"color: {STRAIN}; font-size: 3rem; line-height: 1;")
+                                    ui.label("day streak").classes("s-label")
+                                with ui.column().classes("flex-grow gap-3"):
+                                    with ui.row().classes("gap-2 flex-wrap"):
+                                        if ms["earned"]:
+                                            for m in ms["earned"]:
+                                                with ui.row().classes("items-center gap-1").style(
+                                                    f"background-color: {ELEVATED}; padding: 4px 10px; border-radius: 999px;"
+                                                ):
+                                                    ui.icon("local_fire_department") \
+                                                        .style(f"color: {STRAIN}; font-size: 1rem;")
+                                                    ui.label(f"{m}-day").style(
+                                                        f"color: {TEXT}; font-size: 0.8rem; font-weight: 600;")
+                                        else:
+                                            ui.label("Train today to start your streak.") \
+                                                .style(f"color: {MUTED}; font-size: 0.85rem;")
+                                    if ms["next"] is not None:
+                                        frac = min(1.0, ms["streak"] / ms["next"])
+                                        ui.label(f"{ms['days_to_next']} days to {ms['next']}-day milestone") \
+                                            .classes("s-label")
+                                        with ui.element("div").style(
+                                            f"width: 100%; height: 8px; background-color: {TRACK}; "
+                                            "border-radius: 999px; overflow: hidden;"
+                                        ):
+                                            ui.element("div").style(
+                                                f"width: {round(frac * 100)}%; height: 100%; "
+                                                f"background: linear-gradient(90deg, {STRAIN_START}, {STRAIN_END});"
+                                            )
+                                    else:
+                                        ui.label("All milestones earned 🔥") \
+                                            .style(f"color: {STRAIN}; font-weight: 600;")
 
                     # ---- Hero row: weekly-load ScoreRing + discipline donut ----
                     with ui.element("div").classes("hero-grid w-full"):

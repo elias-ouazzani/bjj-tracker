@@ -57,6 +57,32 @@ def current_streak(sessions: list[Session]) -> int:
     return streak
 
 
+# Streak milestones (consecutive-day badges). Kept small + memorable.
+STREAK_MILESTONES = [3, 7, 14, 30, 60, 100, 365]
+
+
+def streak_milestones(streak: int) -> dict:
+    """Milestone breakdown for a current streak.
+
+    Returns:
+        {
+            "streak": 9,
+            "earned": [3, 7],          # milestones already reached
+            "next": 14,                # next milestone, or None if all earned
+            "days_to_next": 5,         # days until `next`, or None
+        }
+    """
+    earned = [m for m in STREAK_MILESTONES if streak >= m]
+    upcoming = [m for m in STREAK_MILESTONES if streak < m]
+    nxt = upcoming[0] if upcoming else None
+    return {
+        "streak": streak,
+        "earned": earned,
+        "next": nxt,
+        "days_to_next": (nxt - streak) if nxt is not None else None,
+    }
+
+
 def weekly_discipline_minutes(
     sessions: list[Session], n_weeks: int = 8, *, today: date | None = None,
 ) -> dict:
