@@ -151,6 +151,17 @@ def test_list_all_sessions_returns_every_user(fake_client):
     fake_client.collection.assert_called_with("sessions")
 
 
+def test_list_all_sessions_skips_unparseable_doc(fake_client):
+    """A single malformed/legacy doc must not sink the whole admin read."""
+    good = _bjj_session(id_="ok", user_id="u1")
+    doc_good = MagicMock(); doc_good.to_dict.return_value = good.model_dump(mode="json")
+    doc_bad = MagicMock(); doc_bad.id = "legacy"; doc_bad.to_dict.return_value = {"nope": 1}
+    fake_client.collection.return_value.stream.return_value = [doc_good, doc_bad]
+
+    results = db.list_all_sessions()
+    assert [r.id for r in results] == ["ok"]  # bad doc skipped, good one kept
+
+
 # ------------- _client() initialization -------------
 
 def test_client_with_credentials_env(monkeypatch):
@@ -280,3 +291,13 @@ def test_list_all_recovery_returns_every_user(fake_client):
     results = db.list_all_recovery()
     assert {r.user_id for r in results} == {"u1", "u2"}
     fake_client.collection.assert_called_with("recovery_logs")
+
+
+def test_list_all_recovery_skips_unparseable_doc(fake_client):
+    good = _recovery(id_="ok", user_id="u1")
+    doc_good = MagicMock(); doc_good.to_dict.return_value = good.model_dump(mode="json")
+    doc_bad = MagicMock(); doc_bad.id = "legacy"; doc_bad.to_dict.return_value = {"nope": 1}
+    fake_client.collection.return_value.stream.return_value = [doc_good, doc_bad]
+
+    results = db.list_all_recovery()
+    assert [r.id for r in results] == ["ok"]
