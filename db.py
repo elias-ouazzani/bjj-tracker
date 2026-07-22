@@ -73,6 +73,16 @@ def delete_session(session_id: str) -> None:
     log.debug("db.delete_session id=%s", session_id)
 
 
+def list_all_sessions() -> list[Session]:
+    """Every session across ALL users. Admin-only — bypasses the per-user
+    ownership filter, so never call this from a user-facing path. Fine at
+    personal/beta volume; would need pagination at scale."""
+    return [
+        Session(**doc.to_dict())
+        for doc in _client().collection(SESSIONS_COLLECTION).stream()
+    ]
+
+
 def list_sessions(user_id: str, start: datetime, end: datetime) -> list[Session]:
     """All sessions for `user_id` with `start <= started_at <= end`,
     sorted by started_at ascending.
@@ -121,6 +131,14 @@ def delete_recovery(recovery_id: str) -> None:
     """Delete a recovery log by ID. Idempotent — no-op if not found."""
     _client().collection(RECOVERY_COLLECTION).document(recovery_id).delete()
     log.debug("db.delete_recovery id=%s", recovery_id)
+
+
+def list_all_recovery() -> list[RecoveryLog]:
+    """Every recovery log across ALL users. Admin-only (see list_all_sessions)."""
+    return [
+        RecoveryLog(**doc.to_dict())
+        for doc in _client().collection(RECOVERY_COLLECTION).stream()
+    ]
 
 
 def list_recovery(user_id: str, start: datetime, end: datetime) -> list[RecoveryLog]:

@@ -31,6 +31,7 @@ from ai import extract_tags
 from auth import verify_id_token
 from coach import build_coach_context, coach_reply
 from charts import (
+    admin_overview,
     current_streak,
     discipline_totals,
     recovery_score_on,
@@ -39,6 +40,8 @@ from charts import (
     weekly_discipline_minutes,
     weekly_recovery_score,
 )
+from db import list_all_recovery, list_all_sessions
+from services.admin import is_admin
 from services.flags import flag_on
 from services.sessions import (
     SessionAccessDenied,
@@ -745,6 +748,76 @@ def login_page() -> None:
             .classes("text-xs mt-3").style(f"color: {MUTED}")
 
 
+@ui.page("/admin")
+def admin_page(request: Request) -> None:
+    """Private operator dashboard — app-wide KPIs across all users.
+
+    Two gates: must be signed in (auth cookie), AND must be on the
+    ADMIN_EMAILS allow-list. Non-admins are bounced to /.
+    """
+    auth_session = _read_auth_cookie(request)
+    if not auth_session or not auth_session.get("uid"):
+        ui.navigate.to("/login")
+        return
+    if not is_admin(auth_session.get("email")):
+        log.warning("admin gate: non-admin uid=%s email=%s blocked",
+                    auth_session.get("uid"), auth_session.get("email"))
+        ui.navigate.to("/")
+        return
+
+    _apply_theme()
+
+    with ui.header().classes("app-header items-center px-4 py-2").props("elevated=false"):
+        with ui.row().classes("items-center gap-2 w-full max-w-5xl mx-auto"):
+            _logo_mark(26, uid="admin")
+            ui.label("STRAIN · ADMIN").classes("text-lg s-stat") \
+                .style(f"color: {TEXT}; letter-spacing: 0.04em;")
+            ui.space()
+            ui.button(icon="arrow_back", on_click=lambda: ui.navigate.to("/")) \
+                .props("flat dense round").style(f"color: {MUTED}").tooltip("Back to app")
+
+    with ui.column().classes("page-content w-full gap-5 p-6 max-w-5xl mx-auto"):
+        ui.label("Overview · all users").classes("s-label")
+        try:
+            sessions = list_all_sessions()
+            recovery_logs = list_all_recovery()
+        except Exception:
+            log.exception("admin_page.load")
+            ui.label("Could not load admin stats.").style(f"color: {MUTED}")
+            return
+        stats = admin_overview(sessions, recovery_logs)
+
+        with ui.element("div").classes("kpi-grid w-full"):
+            _kpi_card("Users", stats["total_users"], color=STRAIN)
+            _kpi_card("Sessions", stats["total_sessions"], color=TEXT)
+            _kpi_card("Active · 7d", stats["active_users_7d"], color=STRAIN, pulse=True)
+            _kpi_card("Sessions · 7d", stats["sessions_7d"], color=TEXT)
+
+        with ui.element("div").classes("kpi-grid w-full"):
+            _kpi_card("Recovery logs", stats["total_recovery_logs"], color=TEXT)
+            _kpi_card("Total minutes", stats["total_minutes"], unit="min", color=TEXT)
+
+        with ui.card().classes("w-full p-5").style(f"background-color: {SURFACE}"):
+            ui.label("Discipline split · all users").classes("s-section").style("margin-bottom: 8px;")
+            disciplines = stats["disciplines"]
+            if not disciplines:
+                ui.label("No sessions yet.").style(f"color: {MUTED}")
+            else:
+                for d, minutes in sorted(disciplines.items(), key=lambda x: -x[1]):
+                    _metric_row(
+                        DISCIPLINE_ICONS.get(d, "fitness_center"),
+                        DISCIPLINE_LABELS.get(d, d), minutes, unit="min",
+                        accent=DISCIPLINE_COLORS.get(d, ACCENT),
+                    )
+
+        with ui.card().classes("w-full p-5").style(f"background-color: {SURFACE}"):
+            ui.label("Product analytics").classes("s-section").style("margin-bottom: 8px;")
+            ui.label("Usage, retention, funnels and feature flags live in PostHog.") \
+                .style(f"color: {TEXT2}; font-size: 0.9rem;")
+            ui.link("Open PostHog dashboard →", "https://us.posthog.com/project/512793") \
+                .props("target=_blank").style(f"color: {ACCENT}; font-weight: 600;")
+
+
 @ui.page("/")
 def index(request: Request) -> None:
     # Auth gate — redirect unauthenticated visitors to /login.
@@ -784,6 +857,9 @@ def index(request: Request) -> None:
             ):
                 ui.label((current_user_name or "U")[0].upper()) \
                     .style(f"color: {TEXT}; font-weight: 700;")
+            if is_admin(current_user_email):
+                ui.button(icon="admin_panel_settings", on_click=lambda: ui.navigate.to("/admin")) \
+                    .props("flat dense round").style(f"color: {MUTED}").tooltip("Admin")
             ui.button(icon="logout", on_click=sign_out) \
                 .props("flat dense round").style(f"color: {MUTED}").tooltip("Sign out")
 

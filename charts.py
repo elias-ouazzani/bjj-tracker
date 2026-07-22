@@ -57,6 +57,41 @@ def current_streak(sessions: list[Session]) -> int:
     return streak
 
 
+def admin_overview(
+    sessions: list[Session],
+    recovery_logs: list[RecoveryLog],
+    *,
+    today: date | None = None,
+) -> dict:
+    """App-wide KPIs across ALL users, for the admin dashboard.
+
+    Returns:
+        {
+            "total_users": 3,          # distinct user_ids seen anywhere
+            "total_sessions": 120,
+            "total_recovery_logs": 40,
+            "total_minutes": 5400,     # all-time training minutes
+            "sessions_7d": 9,          # sessions in the last 7 days
+            "active_users_7d": 2,      # distinct users with a session in 7d
+            "disciplines": {"bjj": 3000, ...},  # minutes per discipline
+        }
+    """
+    if today is None:
+        today = date.today()
+    week_ago = today - timedelta(days=7)
+    user_ids = {s.user_id for s in sessions} | {r.user_id for r in recovery_logs}
+    recent = [s for s in sessions if s.started_at.date() > week_ago]
+    return {
+        "total_users": len(user_ids),
+        "total_sessions": len(sessions),
+        "total_recovery_logs": len(recovery_logs),
+        "total_minutes": sum(total_minutes(s.data) for s in sessions),
+        "sessions_7d": len(recent),
+        "active_users_7d": len({s.user_id for s in recent}),
+        "disciplines": discipline_totals(sessions),
+    }
+
+
 # Streak milestones (consecutive-day badges). Kept small + memorable.
 STREAK_MILESTONES = [3, 7, 14, 30, 60, 100, 365]
 
