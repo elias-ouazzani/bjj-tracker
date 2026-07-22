@@ -7,6 +7,7 @@ from charts import (
     daily_recovery_score,
     discipline_totals,
     recovery_score_on,
+    streak_milestones,
     total_minutes,
     weekly_discipline_minutes,
     weekly_recovery_score,
@@ -84,6 +85,34 @@ class TestCurrentStreak:
             _session(today - timedelta(days=2), GrapplingData(discipline="bjj")),
         ]
         assert current_streak(sessions) == 1
+
+
+# ---------------- streak_milestones ----------------
+
+class TestStreakMilestones:
+    def test_zero_streak_none_earned(self):
+        ms = streak_milestones(0)
+        assert ms["streak"] == 0
+        assert ms["earned"] == []
+        assert ms["next"] == 3
+        assert ms["days_to_next"] == 3
+
+    def test_partway_earned_and_next(self):
+        ms = streak_milestones(9)
+        assert ms["earned"] == [3, 7]
+        assert ms["next"] == 14
+        assert ms["days_to_next"] == 5
+
+    def test_exactly_on_a_milestone(self):
+        ms = streak_milestones(7)
+        assert 7 in ms["earned"]
+        assert ms["next"] == 14
+
+    def test_all_milestones_earned(self):
+        ms = streak_milestones(400)
+        assert ms["next"] is None
+        assert ms["days_to_next"] is None
+        assert 365 in ms["earned"]
 
 
 # ---------------- weekly_discipline_minutes ----------------

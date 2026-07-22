@@ -3,6 +3,7 @@ firebase-admin>=6.5
 itsdangerous>=2.2
 pydantic>=2.10,<3
 pydantic-ai
+posthog>=3.5
 python-dotenv>=1.0
 pytest>=8.2
 pytest-cov>=5.0

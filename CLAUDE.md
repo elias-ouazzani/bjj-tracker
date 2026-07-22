@@ -2,6 +2,10 @@
 
 Personal BJJ training session log. Built with NiceGUI + Firestore + Pydantic AI.
 
+> **Launched (2026-07-10):** live at **strain.fit** (marketing, Cloudflare Pages)
+> → **app.strain.fit** (app, Cloudflare Worker → private Cloud Run via WIF). See
+> `NOTES.md` → "✅ LAUNCHED (2026-07-10)" for architecture + redeploy commands.
+
 ## Stack
 - Python 3.11+
 - NiceGUI 2.x (web UI)

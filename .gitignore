@@ -15,6 +15,16 @@ serviceAccountKey.json
 firebase-credentials.json
 *-credentials.json
 
+# Cloudflare proxy secrets (generated locally — NEVER commit these)
+cloudflare-proxy/priv.pem
+cloudflare-proxy/jwks.json
+priv.pem
+jwks.json
+
+# Wrangler build cache
+.wrangler/
+**/.wrangler/
+
 # IDE
 .vscode/
 .idea/

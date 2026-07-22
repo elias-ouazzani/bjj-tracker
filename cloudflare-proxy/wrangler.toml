@@ -1,0 +1,24 @@
+name = "strain-proxy"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# Bind the Worker to app.<your-domain>. Requires the domain's DNS to be on
+# Cloudflare (the zone). The app record must be PROXIED (orange cloud) so the
+# Worker runs on it.
+routes = [
+  { pattern = "app.strain.fit/*", zone_name = "strain.fit" }
+]
+
+[vars]
+PROJECT_NUMBER = "264025165631"
+POOL_ID        = "cf-proxy-pool"
+PROVIDER_ID    = "cf-proxy-provider"
+SA_EMAIL       = "bjj-tracker-runtime@atheal-internship-elias.iam.gserviceaccount.com"
+CLOUD_RUN_URL  = "https://bjj-tracker-6otadxxc2a-ew.a.run.app"   # from setup-gcp.sh output
+ISSUER         = "https://strain-proxy.cf"            # must match setup-gcp.sh
+AUDIENCE       = "strain-cf-proxy"                    # must match setup-gcp.sh
+SUBJECT        = "strain-worker"                      # must match setup-gcp.sh
+KID            = "strain-key-1"                       # from gen-keys.mjs output
+
+# PRIVATE_KEY_PEM is NOT set here — it's a secret. Set it with:
+#   wrangler secret put PRIVATE_KEY_PEM < priv.pem
