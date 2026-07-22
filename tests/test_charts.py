@@ -3,6 +3,7 @@
 from datetime import date, datetime, timedelta
 
 from charts import (
+    admin_overview,
     current_streak,
     daily_recovery_score,
     discipline_totals,
@@ -113,6 +114,43 @@ class TestStreakMilestones:
         assert ms["next"] is None
         assert ms["days_to_next"] is None
         assert 365 in ms["earned"]
+
+
+# ---------------- admin_overview ----------------
+
+class TestAdminOverview:
+    def test_empty(self):
+        stats = admin_overview([], [])
+        assert stats["total_users"] == 0
+        assert stats["total_sessions"] == 0
+        assert stats["total_recovery_logs"] == 0
+        assert stats["total_minutes"] == 0
+        assert stats["sessions_7d"] == 0
+        assert stats["active_users_7d"] == 0
+        assert stats["disciplines"] == {}
+
+    def test_aggregates_across_users(self):
+        today = date(2026, 6, 15)
+        recent = datetime(2026, 6, 14, 10)   # within 7d
+        old = datetime(2026, 5, 1, 10)       # outside 7d
+        sessions = [
+            Session(id="1", user_id="u1", started_at=recent,
+                    data=GrapplingData(discipline="bjj", drilling_minutes=30)),
+            Session(id="2", user_id="u2", started_at=recent,
+                    data=CardioData(discipline="cardio", activity_type="run", duration_minutes=20)),
+            Session(id="3", user_id="u1", started_at=old,
+                    data=GrapplingData(discipline="bjj", drilling_minutes=15)),
+        ]
+        recovery = [_recovery(datetime(2026, 6, 14, 8), sleep_hours=8)]  # user "u"
+
+        stats = admin_overview(sessions, recovery, today=today)
+        assert stats["total_users"] == 3          # u1, u2, u (from recovery)
+        assert stats["total_sessions"] == 3
+        assert stats["total_recovery_logs"] == 1
+        assert stats["total_minutes"] == 30 + 20 + 15
+        assert stats["sessions_7d"] == 2          # the two "recent" ones
+        assert stats["active_users_7d"] == 2      # u1, u2
+        assert stats["disciplines"] == {"bjj": 45, "cardio": 20}
 
 
 # ---------------- weekly_discipline_minutes ----------------

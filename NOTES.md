@@ -60,23 +60,35 @@ bash setup-gcp.sh      # <-- Step 4 is the FAIL-FAST GATE
 
 Recommended order (reordered from the raw list so dependencies line up):
 
-1. **Feature flags** *(S — do first)* — gate every feature below behind a flag
-   so new work ships dark and flips on per-user. Detailed steps ↓.
+1. ✅ **Feature flags** — DONE via PostHog (PR #18). First flagged feature:
+   `training_streak` streak-and-milestones card. Detailed notes ↓.
 2. **Centralized API** *(L — pulled earlier than listed)* — the app is a NiceGUI
    *monolith* (UI + logic in `main.py`). Extract a real API (FastAPI, already
    under NiceGUI) so web + mobile + agent share one backend. **Prerequisite for
    the mobile app** — do it before React Native, not after.
-3. **Analytics dashboard** *(M)* — builds on `charts.py` aggregations; gate it
-   with a flag.
-4. **Admin site** at `admin.strain.fit` *(M)* — new Cloudflare Pages/Worker +
-   route; reuse the existing proxy pattern in `cloudflare-proxy/`.
-5. **Secure admin site** with Cloudflare Zero Trust *(S)* — do this *with* #4,
-   never expose admin unprotected even briefly.
+3. 🟡 **Analytics dashboard** — mostly covered: **product** analytics live in
+   PostHog (use it, don't rebuild); **app-specific** KPIs now live on the
+   `/admin` page (see #4). A user-facing "your trends" view could still come later.
+4. 🟡 **Admin** — built as an in-app **`/admin` route** (not a separate
+   `admin.strain.fit` site — decided it's faster and needs no new infra). Gated
+   by `ADMIN_EMAILS` allow-list (`services/admin.py`), shows app-wide KPIs from
+   Firestore (`charts.admin_overview`) + a link to PostHog. Can graduate to a
+   separate secured site later if needed.
+5. **Secure admin** — for the in-app route, auth is the `ADMIN_EMAILS` gate
+   (server-side, on top of the login gate). Cloudflare Zero Trust only becomes
+   relevant if/when admin moves to its own `admin.strain.fit` subdomain.
 6. **Mobile app** (React Native) *(XL)* — last + largest; only sensible once the
    shared API (#2) exists.
 
 Key dependency: **mobile (#6) depends on the API (#2)**. Building mobile against
 the monolith first means ripping it apart later.
+
+**Admin route — what's built:** `/admin` page in `main.py`, two gates (logged in
+AND `is_admin(email)`). Shows total users / sessions / active-7d / recovery logs
+/ total minutes / discipline split (all users), plus a PostHog link. Admin button
+appears in the app header only for admins. Env: `ADMIN_EMAILS` (comma-separated;
+set to elias.ouazzani@atheal.com in deploy.yml). Cross-user data via
+`db.list_all_sessions()` / `db.list_all_recovery()`.
 
 ### Feature flags — DONE via PostHog (Hassan's recommendation)
 

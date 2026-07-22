@@ -137,6 +137,20 @@ def test_list_sessions_mixed_disciplines(fake_client):
     assert isinstance(results[1].data, CardioData)
 
 
+# ------------- list_all_sessions (admin) -------------
+
+def test_list_all_sessions_returns_every_user(fake_client):
+    s1 = _bjj_session(id_="a", user_id="u1")
+    s2 = _bjj_session(id_="b", user_id="u2")
+    doc1 = MagicMock(); doc1.to_dict.return_value = s1.model_dump(mode="json")
+    doc2 = MagicMock(); doc2.to_dict.return_value = s2.model_dump(mode="json")
+    fake_client.collection.return_value.stream.return_value = [doc1, doc2]
+
+    results = db.list_all_sessions()
+    assert {r.user_id for r in results} == {"u1", "u2"}
+    fake_client.collection.assert_called_with("sessions")
+
+
 # ------------- _client() initialization -------------
 
 def test_client_with_credentials_env(monkeypatch):
@@ -254,3 +268,15 @@ def test_list_recovery_filters_by_date(fake_client):
     )
     assert len(results) == 1
     assert results[0].id == "a"
+
+
+def test_list_all_recovery_returns_every_user(fake_client):
+    r1 = _recovery(id_="a", user_id="u1")
+    r2 = _recovery(id_="b", user_id="u2")
+    doc1 = MagicMock(); doc1.to_dict.return_value = r1.model_dump(mode="json")
+    doc2 = MagicMock(); doc2.to_dict.return_value = r2.model_dump(mode="json")
+    fake_client.collection.return_value.stream.return_value = [doc1, doc2]
+
+    results = db.list_all_recovery()
+    assert {r.user_id for r in results} == {"u1", "u2"}
+    fake_client.collection.assert_called_with("recovery_logs")
