@@ -76,11 +76,19 @@ def delete_session(session_id: str) -> None:
 def list_all_sessions() -> list[Session]:
     """Every session across ALL users. Admin-only — bypasses the per-user
     ownership filter, so never call this from a user-facing path. Fine at
-    personal/beta volume; would need pagination at scale."""
-    return [
-        Session(**doc.to_dict())
-        for doc in _client().collection(SESSIONS_COLLECTION).stream()
-    ]
+    personal/beta volume; would need pagination at scale.
+
+    Unlike the per-user reads, this spans everyone's data, which may include
+    legacy/malformed docs. A single unparseable doc must not sink the whole
+    admin dashboard, so we skip (and log) bad docs instead of raising.
+    """
+    out: list[Session] = []
+    for doc in _client().collection(SESSIONS_COLLECTION).stream():
+        try:
+            out.append(Session(**doc.to_dict()))
+        except Exception:
+            log.warning("list_all_sessions: skipping unparseable doc id=%s", doc.id)
+    return out
 
 
 def list_sessions(user_id: str, start: datetime, end: datetime) -> list[Session]:
@@ -134,11 +142,15 @@ def delete_recovery(recovery_id: str) -> None:
 
 
 def list_all_recovery() -> list[RecoveryLog]:
-    """Every recovery log across ALL users. Admin-only (see list_all_sessions)."""
-    return [
-        RecoveryLog(**doc.to_dict())
-        for doc in _client().collection(RECOVERY_COLLECTION).stream()
-    ]
+    """Every recovery log across ALL users. Admin-only (see list_all_sessions).
+    Skips (and logs) unparseable docs so one bad row can't sink the dashboard."""
+    out: list[RecoveryLog] = []
+    for doc in _client().collection(RECOVERY_COLLECTION).stream():
+        try:
+            out.append(RecoveryLog(**doc.to_dict()))
+        except Exception:
+            log.warning("list_all_recovery: skipping unparseable doc id=%s", doc.id)
+    return out
 
 
 def list_recovery(user_id: str, start: datetime, end: datetime) -> list[RecoveryLog]:

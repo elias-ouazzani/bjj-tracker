@@ -781,9 +781,11 @@ def admin_page(request: Request) -> None:
         try:
             sessions = list_all_sessions()
             recovery_logs = list_all_recovery()
-        except Exception:
+        except Exception as e:
             log.exception("admin_page.load")
-            ui.label("Could not load admin stats.").style(f"color: {MUTED}")
+            # Admin-only page, so surfacing the error detail is safe + helps debug.
+            ui.label(f"Could not load admin stats: {type(e).__name__}: {e}") \
+                .style(f"color: {DANGER}")
             return
         stats = admin_overview(sessions, recovery_logs)
 
